@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mail-digest-agent"
+version = "0.1.0"
+description = "QQ / NetEase mailbox assistant with Feishu CLI delivery and conversation"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+mail-agent = "mail_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mail_agent*"]
+
+[tool.setuptools.package-data]
+mail_agent = ["templates/*.toml", "templates/*.env"]
+
+[tool.uv.workspace]
+members = ["backend"]

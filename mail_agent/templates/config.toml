@@ -1,0 +1,37 @@
+timezone = "Asia/Shanghai"
+digest_time = "09:00"
+database = "data/mail-agent.sqlite3"
+initial_cache_days = 30
+first_digest_hours = 24
+max_sync_messages = 200
+max_digest_messages = 100
+
+[model]
+# OpenAI-compatible Chat Completions endpoint; change these for your provider.
+base_url = "https://api.openai.com/v1"
+name = ""
+api_key_env = "MODEL_API_KEY"
+timeout = 90
+max_tool_rounds = 10
+
+[feishu]
+cli = "lark-cli"
+receive_id_type = "user_id" # user_id means Feishu open_id (ou_...), or use chat_id
+receive_id = ""
+owner_open_id = ""
+
+[[accounts]]
+name = "qq"
+provider = "qq"
+enabled = true
+email = ""
+password_env = "QQ_MAIL_AUTH_CODE"
+folder = "INBOX"
+
+[[accounts]]
+name = "163"
+provider = "163"
+enabled = true
+email = ""
+password_env = "NETEASE_MAIL_AUTH_CODE"
+folder = "INBOX"

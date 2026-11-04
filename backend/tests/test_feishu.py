@@ -1,0 +1,414 @@
+import asyncio
+import json
+import sys
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import func, select
+
+from mail_assistant.api.app import create_app
+from mail_assistant.application.workspace import Workspace
+from mail_assistant.config import Settings
+from mail_assistant.domain.errors import AppError
+from mail_assistant.domain.models import Conversation, Delivery, Digest, Message, Task
+from mail_assistant.domain.schemas import FeishuBindInput
+from mail_assistant.infrastructure.lark_cli import LarkCli, authorization_urls, json_documents
+
+
+def make_stub(tmp_path):
+    path = tmp_path / "lark-test"
+    source = Path(__file__).with_name("fixtures") / "lark_cli_stub.py"
+    path.write_text(f"#!{sys.executable}\n" + source.read_text())
+    path.chmod(0o700)
+    return str(path)
+
+
+@pytest.fixture
+async def workspace(tmp_path):
+    w = Workspace(Settings(tmp_path / "data", mode="demo", lark_command=make_stub(tmp_path)))
+    await w.seed_demo()
+    # The real service pipeline uses an executable CLI substitute and sample
+    # mailbox/model providers. This never invokes a real remote service.
+    w.settings = replace(w.settings, mode="live")
+    w.feishu.cli = LarkCli(w.settings)
+    yield w
+    await w.close()
+
+
+async def wait_for(predicate, timeout=5):
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.02)
+
+
+def controls(w, **values):
+    w.feishu.cli.prepare()
+    path = w.settings.feishu_dir / "fake-control.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(values))
+    temporary.replace(path)
+
+
+def event(content, message_id="om_input", **values):
+    return {
+        "sender_id": "ou_owner",
+        "sender_type": "user",
+        "chat_id": "oc_owner",
+        "chat_type": "p2p",
+        "message_id": message_id,
+        "message_type": "text",
+        "content": content,
+        "create_time": str(int(datetime.now(timezone.utc).timestamp() * 1000)),
+        **values,
+    }
+
+
+def emit(w, payload):
+    with (w.settings.feishu_dir / "fake-events.ndjson").open("a") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+async def execute(w, lane):
+    task = w.tasks.claim(lane)
+    assert task
+    try:
+        result = await w.execute(task)
+    except AppError as error:
+        w.tasks.fail(task["id"], error)
+        raise
+    w.tasks.finish(task["id"], result)
+    return result
+
+
+async def bind(w):
+    task = w.feishu.request_binding(
+        FeishuBindInput(previous_binding_id=w.feishu.state().get("binding_id", ""))
+    )
+    result = await execute(w, "control")
+    assert result["binding_id"] == task["payload"]["binding_id"]
+    return task
+
+
+async def pair_without_listener(w):
+    await bind(w)
+    w.feishu.listener_state(w.feishu.state()["binding_id"], ready=True)
+    view = w.feishu.pair()
+    w.feishu.receive(event(view["pairing_code"]))
+    assert w.feishu.state()["paired_at"]
+
+
+def test_cli_json_and_opaque_urls():
+    text = 'status line\n{\n"appId": "cli_test", "appSecret":"****"\n}\n'
+    assert list(json_documents(text))[0]["appId"] == "cli_test"
+    url = "https://open.feishu.cn/test?code=a%2Bb&next=x%252Fy"
+    assert authorization_urls("  " + url + "\n") == [url]
+    assert authorization_urls(json.dumps({"console_url": url})) == [url]
+
+
+async def test_new_binding_generates_qr_and_recovers_without_a_second_registration(workspace):
+    w = workspace
+    task = await bind(w)
+    assert w.feishu.view()["configured"]
+    assert w.feishu.view()["app_id"] == "cli_course_test"
+    log = (w.settings.feishu_dir / "fake-log.ndjson").read_text()
+    assert "test%2Bopaque&lang=zh" in log
+    png = list((w.settings.feishu_dir / "qr").glob("*.png"))[0]
+    assert png.read_bytes().startswith(b"\x89PNG")
+    w.feishu.change(w.feishu.state()["binding_id"], status="authorizing", configured=False)
+    await w.feishu.authorize(task | {"attempts": 2})
+    entries = [
+        json.loads(line)
+        for line in (w.settings.feishu_dir / "fake-log.ndjson").read_text().splitlines()
+    ]
+    assert sum(row.get("args", [])[:2] == ["config", "init"] for row in entries) == 1
+
+
+async def test_cancel_waiting_authorization_cleans_up_and_keeps_task_cancelled(workspace):
+    w = workspace
+    controls(w, wait_authorization=True)
+    task = w.feishu.request_binding(FeishuBindInput())
+    claimed = w.tasks.claim("control")
+    running = asyncio.create_task(w.execute(claimed))
+    await wait_for(lambda: bool(w.feishu.view()["urls"]))
+    w.feishu.disconnect()
+    with pytest.raises(AppError, match="取消") as caught:
+        await running
+    w.tasks.fail(task["id"], caught.value)
+    assert not w.feishu.cli.processes
+    assert w.feishu.view()["status"] == "disconnected"
+    with w.db.session() as session:
+        assert session.get(Task, task["id"]).status == "cancelled"
+
+
+async def test_expired_authorization_discards_the_old_verification_link(workspace):
+    w = workspace
+    controls(w, authorization_expired=True)
+    w.feishu.request_binding(FeishuBindInput())
+    with pytest.raises(AppError):
+        await execute(w, "control")
+    assert w.feishu.view()["status"] == "expired"
+    assert w.feishu.view()["urls"] == []
+    assert not w.feishu.cli.processes
+
+
+async def test_existing_app_secret_is_stdin_only_and_not_in_task_or_logs(workspace):
+    w = workspace
+    secret = "private-stub-app-secret"
+    task = w.feishu.request_binding(
+        FeishuBindInput(mode="existing", app_id="cli_existing", app_secret=secret)
+    )
+    assert secret not in json.dumps(task)
+    assert secret not in json.dumps(w.feishu.view())
+    await execute(w, "control")
+    assert secret not in (w.settings.feishu_dir / "fake-log.ndjson").read_text()
+    assert w.db.get("feishu_secret:" + task["payload"]["binding_id"]) is None
+
+
+async def test_cancel_after_profile_save_does_not_reactivate_the_binding(workspace):
+    w = workspace
+    original = w.feishu.cli.run
+
+    async def disconnect_after_show(profile, *args, **kwargs):
+        result = await original(profile, *args, **kwargs)
+        if args == ("config", "show") and result.get("appId"):
+            w.feishu.disconnect()
+        return result
+
+    w.feishu.cli.run = disconnect_after_show
+    w.feishu.request_binding(FeishuBindInput())
+    with pytest.raises(AppError, match="操作已停止"):
+        await execute(w, "control")
+    assert w.feishu.view()["status"] == "disconnected"
+    assert not w.feishu.view()["configured"]
+
+
+async def test_stream_pairing_query_dedup_multiturn_and_reply_sources(workspace):
+    w = workspace
+    await bind(w)
+    stop = asyncio.Event()
+    listener = asyncio.create_task(w.feishu.supervise(stop))
+    try:
+        await wait_for(lambda: w.feishu.view()["listener"]["ready"])
+        view = w.feishu.pair()
+        emit(w, event(view["pairing_code"], "om_wrong", chat_type="group"))
+        await asyncio.sleep(0.05)
+        assert not w.feishu.state().get("paired_at")
+        emit(w, event(view["pairing_code"], "om_pair"))
+        await wait_for(lambda: bool(w.feishu.state().get("paired_at")))
+        assert w.feishu.state()["chat_id"] == "oc_owner"
+        w.feishu.test_send(w.feishu.state()["binding_id"])
+        await execute(w, "delivery")
+        w.feishu.set_enabled(True, w.feishu.state()["binding_id"])
+        first = event("找导师的会议通知", "om_question")
+        emit(w, first)
+        emit(w, first | {"event_id": "a-repeated-delivery"})
+        await wait_for(lambda: has_query(w))
+        await execute(w, "interactive")
+        await execute(w, "delivery")
+        emit(w, event("那封邮件后来有更新吗？", "om_followup"))
+        await wait_for(lambda: has_query(w))
+        await execute(w, "interactive")
+        await execute(w, "delivery")
+        with w.db.session() as session:
+            conversations = session.scalars(
+                select(Conversation).where(Conversation.channel == "feishu")
+            ).all()
+            assert len(conversations) == 1
+            messages = session.scalars(
+                select(Message)
+                .where(Message.conversation_id == conversations[0].id, Message.role == "assistant")
+                .order_by(Message.created_at)
+            ).all()
+            assert len(messages) == 2 and "16:00" in messages[-1].content
+            assert messages[-1].sources
+            assert (
+                session.scalar(select(func.count()).select_from(Task).where(Task.kind == "query"))
+                == 2
+            )
+        log = (w.settings.feishu_dir / "fake-log.ndjson").read_text()
+        assert "邮件依据" in log and "--as" in log and "bot" in log
+    finally:
+        stop.set()
+        await listener
+    assert not w.feishu.cli.processes
+
+
+def has_query(w):
+    with w.db.session() as session:
+        return (
+            session.scalar(select(Task.id).where(Task.kind == "query", Task.status == "queued"))
+            is not None
+        )
+
+
+async def test_partial_send_keeps_successful_chunks_and_retries_only_the_failed_part(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    controls(w, send_fail_at=2)
+    task = w.feishu.queue_delivery("query", "fixture-long-text", "甲" * 5000)
+    with pytest.raises(AppError, match="缺少权限"):
+        await execute(w, "delivery")
+    row = w.feishu.deliveries()[0]
+    assert row["status"] == "failed" and [chunk["status"] for chunk in row["chunks"]] == [
+        "sent",
+        "failed",
+    ]
+    assert w.feishu.view()["urls"]
+    controls(w)
+    w.feishu.retry_delivery(row["id"])
+    await execute(w, "delivery")
+    assert w.feishu.deliveries()[0]["status"] == "sent"
+    assert int((w.settings.feishu_dir / "fake-send-count").read_text()) == 3
+    await w.execute(task)
+    assert int((w.settings.feishu_dir / "fake-send-count").read_text()) == 3
+
+
+async def test_uncertain_result_requires_explicit_retry_and_preserves_the_text(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    controls(w, send_no_output=True)
+    w.feishu.test_send(w.feishu.state()["binding_id"])
+    with pytest.raises(AppError):
+        await execute(w, "delivery")
+    delivery = w.feishu.deliveries()[0]
+    assert delivery["status"] == "uncertain"
+    with pytest.raises(AppError, match="核对飞书"):
+        w.feishu.retry_delivery(delivery["id"])
+    assert int((w.settings.feishu_dir / "fake-send-count").read_text()) == 1
+    controls(w)
+    w.feishu.retry_delivery(delivery["id"], allow_uncertain=True)
+    await execute(w, "delivery")
+    assert w.feishu.view()["last_test_at"]
+
+
+async def test_repair_invalidates_old_delivery_target_and_unknown_sender_is_ignored(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    task = w.feishu.test_send(w.feishu.state()["binding_id"])
+    old_binding = w.feishu.state()["binding_id"]
+    view = w.feishu.pair()
+    assert view["binding_id"] != old_binding
+    w.feishu.receive(event(view["pairing_code"], sender_id="ou_new", chat_id="oc_new"))
+    with pytest.raises(AppError, match="接收对象已变化"):
+        await execute(w, "delivery")
+    assert not (w.settings.feishu_dir / "fake-send-count").exists()
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.receive(event("找会议通知", sender_id="ou_unknown"))
+    assert not has_query(w)
+    assert task["kind"] == "feishu_send"
+
+
+async def test_interrupted_chunk_is_uncertain_after_workspace_restart(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    task = w.feishu.test_send(w.feishu.state()["binding_id"])
+    claimed = w.tasks.claim("delivery")
+    with w.db.session() as session:
+        row = session.get(Delivery, task["payload"]["delivery_id"])
+        row.status, row.chunks = "sending", [{"index": 0, "status": "sending"}]
+    restored = Workspace(w.settings)
+    try:
+        restored.tasks.recover()
+        assert claimed["id"] == restored.tasks.claim("delivery")["id"]
+        with pytest.raises(AppError, match="发送结果不确定"):
+            await restored.execute(claimed)
+        assert restored.feishu.deliveries()[0]["status"] == "uncertain"
+        assert not (w.settings.feishu_dir / "fake-send-count").exists()
+    finally:
+        await restored.close()
+
+
+async def test_digest_generation_and_failed_delivery_remain_separate(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    result = await execute(w, "background")
+    digest_id = result["digest_id"]
+    controls(w, send_fail_at=1)
+    w.feishu.queue_digest(digest_id)
+    with pytest.raises(AppError):
+        await execute(w, "delivery")
+    with w.db.session() as session:
+        digest = session.get(Digest, digest_id)
+        assert digest.status == "generated" and digest.delivery_status == "failed"
+        assert len(digest.items) == 5
+    controls(w)
+    w.feishu.retry_delivery(w.feishu.deliveries()[0]["id"])
+    await execute(w, "delivery")
+    with w.db.session() as session:
+        assert session.scalar(select(func.count()).select_from(Digest)) == 1
+        assert session.get(Digest, digest_id).delivery_status == "sent"
+
+
+async def test_listener_reconnects_after_a_subprocess_failure(workspace):
+    w = workspace
+    await bind(w)
+    controls(w, consume_fail_once=True)
+    stop = asyncio.Event()
+    running = asyncio.create_task(w.feishu.supervise(stop))
+    try:
+        await wait_for(lambda: w.feishu.view()["listener"]["ready"])
+        assert int((w.settings.feishu_dir / "fake-consume-count").read_text()) == 2
+    finally:
+        stop.set()
+        await running
+    assert not w.feishu.cli.processes
+
+
+async def test_expired_pairing_code_cannot_bind(workspace):
+    from datetime import timedelta
+
+    w = workspace
+    await bind(w)
+    w.feishu.listener_state(w.feishu.state()["binding_id"], ready=True)
+    view = w.feishu.pair()
+    w.feishu.change(
+        view["binding_id"],
+        pairing_expires_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+    )
+    assert w.feishu.view()["pairing_code"] is None
+    w.feishu.receive(event(view["pairing_code"]))
+    assert not w.feishu.state().get("paired_at")
+
+
+def test_cli_environment_is_scoped_to_the_project(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENCLAW_HOME", "another-agent-workspace")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "unrelated-app-secret")
+    monkeypatch.setenv("LARKSUITE_CLI_PROFILE", "personal")
+    settings = Settings(tmp_path)
+    env = settings.lark_env()
+    assert env["LARKSUITE_CLI_CONFIG_DIR"] == str(settings.feishu_dir / "cli")
+    assert not any(
+        key in env for key in ("OPENCLAW_HOME", "FEISHU_APP_SECRET", "LARKSUITE_CLI_PROFILE")
+    )
+
+
+def test_feishu_api_requires_login_and_pairing_before_enabling(tmp_path):
+    app = create_app(Settings(tmp_path / "api", lark_command=make_stub(tmp_path)))
+    with TestClient(app) as client:
+        assert client.get("/api/v1/settings/feishu").status_code == 401
+        token = app.state.workspace.secrets.bootstrap_token
+        assert (
+            client.post(
+                "/api/v1/auth/bootstrap", json={"token": token, "password": "local-test-password"}
+            ).status_code
+            == 200
+        )
+        state = client.get("/api/v1/settings/feishu").json()
+        assert state["status"] == "unconfigured"
+        assert (
+            client.put(
+                "/api/v1/settings/feishu", json={"enabled": True, "binding_id": ""}
+            ).status_code
+            == 400
+        )
+        response = client.post(
+            "/api/v1/settings/feishu/bind",
+            json={"mode": "existing", "app_id": "cli_test", "app_secret": "test-only-secret"},
+        )
+        assert response.status_code == 202 and "test-only-secret" not in response.text
+        assert client.post("/api/v1/settings/feishu/disconnect").json()["status"] == "disconnected"

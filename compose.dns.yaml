@@ -1,0 +1,11 @@
+# Optional override for Docker hosts without a working upstream resolver.
+# Use the DNS server provided by your current network; do not put mailbox IPs here.
+x-dns: &dns
+  dns:
+    - ${MAIL_ASSISTANT_DNS:?Set MAIL_ASSISTANT_DNS to a reachable DNS server}
+
+services:
+  api:
+    <<: *dns
+  worker:
+    <<: *dns

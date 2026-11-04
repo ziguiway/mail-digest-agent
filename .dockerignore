@@ -1,0 +1,17 @@
+.git
+.venv
+.env
+config.toml
+data
+runtime
+backups
+**/node_modules
+**/dist
+**/__pycache__
+**/.pytest_cache
+**/test-results
+**/playwright-report
+**/*.tsbuildinfo
+build
+*.egg-info
+.DS_Store

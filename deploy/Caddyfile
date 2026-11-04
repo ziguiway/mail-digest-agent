@@ -1,0 +1,8 @@
+{$MAIL_ASSISTANT_DOMAIN} {
+    # Keep SSE unbuffered; Caddy handles text/event-stream immediately.
+    reverse_proxy api:8765
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+    }
+}

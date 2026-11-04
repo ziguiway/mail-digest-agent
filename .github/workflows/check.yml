@@ -1,0 +1,48 @@
+name: Workspace checks
+on: [push, pull_request]
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --all-packages --group dev --frozen
+      - run: .venv/bin/ruff check --config backend/pyproject.toml backend deploy && .venv/bin/ruff format --config backend/pyproject.toml --check backend deploy
+      - run: .venv/bin/python -m unittest discover -s tests -v
+      - run: .venv/bin/python -m pytest -c backend/pyproject.toml backend/tests -q
+      - run: .venv/bin/python -m mail_assistant schema --output /tmp/mail-openapi.json && cmp backend/openapi.json /tmp/mail-openapi.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install --global pnpm@11.25.0
+      - run: pnpm install --frozen-lockfile
+        working-directory: apps/web
+      - run: pnpm format:check && pnpm build
+        working-directory: apps/web
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: apps/web
+      - run: pnpm test:e2e
+        working-directory: apps/web
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-results
+          path: apps/web/test-results
+  containers:
+    needs: application
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config --quiet
+      - run: docker compose build
+      - run: python3 deploy/verify_containers.py --https --report /tmp/container-checks.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: container-checks
+          path: /tmp/container-checks.json

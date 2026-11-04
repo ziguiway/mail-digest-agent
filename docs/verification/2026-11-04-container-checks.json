@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "image": "mail-digest-agent:local",
+  "checks": [
+    "live bootstrap, UID, CLI, offline import, maintenance lock, new-volume restore, MCP discovery, key decryption, restart",
+    "separate API/Worker sample digest, question sources, mail/digest/conversation recovery",
+    "HTTPS local CA, hostname verification, Secure session, origin, private API, SSE before task completion"
+  ],
+  "real_external_services": false,
+  "public_ca_issuance": false
+}

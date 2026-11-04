@@ -1,0 +1,27 @@
+services:
+  api:
+    ports: !reset []
+    environment:
+      # API has no published port in this mode. Only this deployment's private
+      # network reaches it; Caddy overwrites client-supplied forwarding headers.
+      MAIL_ASSISTANT_FORWARDED_ALLOW_IPS: "*"
+  caddy:
+    image: caddy:2.11.7-alpine
+    restart: unless-stopped
+    environment:
+      MAIL_ASSISTANT_DOMAIN: ${MAIL_ASSISTANT_DOMAIN:?Set MAIL_ASSISTANT_DOMAIN to your DNS name}
+    ports:
+      - "${MAIL_ASSISTANT_TLS_BIND:-0.0.0.0}:${MAIL_ASSISTANT_TLS_HTTP_PORT:-80}:80"
+      - "${MAIL_ASSISTANT_TLS_BIND:-0.0.0.0}:${MAIL_ASSISTANT_TLS_PORT:-443}:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    stop_grace_period: 15s
+
+volumes:
+  caddy_data:
+  caddy_config:
