@@ -2534,6 +2534,16 @@
           "created_at": {
             "type": "string",
             "title": "Created At"
+          },
+          "presentation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueryPresentation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -2627,6 +2637,79 @@
         },
         "type": "object",
         "title": "ModelView"
+      },
+      "QueryPresentation": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
+          "type": {
+            "type": "string",
+            "const": "mail_table",
+            "title": "Type",
+            "default": "mail_table"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/QueryTableRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "summary",
+          "rows"
+        ],
+        "title": "QueryPresentation"
+      },
+      "QueryTableRow": {
+        "properties": {
+          "mail_id": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Mail Id"
+          },
+          "handling": {
+            "type": "string",
+            "enum": [
+              "action",
+              "confirm",
+              "waiting",
+              "notice"
+            ],
+            "title": "Handling"
+          },
+          "action": {
+            "type": "string",
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "mail_id",
+          "handling",
+          "action"
+        ],
+        "title": "QueryTableRow"
       },
       "QuestionInput": {
         "properties": {

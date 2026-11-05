@@ -7,6 +7,7 @@ from ..config import Settings
 from ..domain.errors import AppError
 from ..domain.models import Account, Message
 from ..domain.schemas import ModelView
+from ..domain.query_answers import present_query_answer, validate_query_answer
 from ..infrastructure.database import Database, record
 from ..infrastructure.security import Secrets
 from ..infrastructure.mail_provider import McpMailProvider, McpManager
@@ -79,24 +80,21 @@ class QueryTools:
         if not 1 <= len(mail_ids) <= 10:
             return {"error": "每次读取一至十封邮件"}
         mails = self.workspace.mailboxes.read(mail_ids, self.account_ids)
-        self.evidence.update({m["id"]: m for m in mails})
-        return {
-            "mails": [
-                m
-                | {
-                    "body": m["body"][:12000],
-                    "body_truncated": m["body_truncated"] or len(m["body"]) > 12000,
-                }
-                for m in mails
-            ]
-        }
+        visible = [
+            m
+            | {
+                "body": m["body"][:12000],
+                "body_truncated": m["body_truncated"] or len(m["body"]) > 12000,
+            }
+            for m in mails
+        ]
+        self.evidence.update({m["id"]: m for m in visible})
+        return {"mails": visible}
 
     async def get_thread(self, mail_id: str) -> dict:
         """通过引用头查找相关往来；同标题候选不证明是同一会话，须核对正文。"""
         await self.stage("get_thread", "正在核对前后往来")
         result = self.workspace.mailboxes.thread(mail_id, self.account_ids)
-        for mail in result["linked"] + result["subject_candidates"]:
-            self.evidence[mail["id"]] = mail
         for key in ("linked", "subject_candidates"):
             result[key] = [
                 m
@@ -106,6 +104,7 @@ class QueryTools:
                 }
                 for m in result[key]
             ]
+            self.evidence.update({m["id"]: m for m in result[key]})
         return result
 
 
@@ -270,6 +269,7 @@ class Workspace:
             await self.mailboxes.sync(stale, lambda title: self.progress(task["id"], title))
         tools = QueryTools(self, ids, task["id"])
         answer = await self.intelligence.answer(task["payload"]["question"], history, tools)
+        answer = validate_query_answer(answer, tools.evidence)
         sources = [tools.evidence[i] for i in answer["mail_ids"] if i in tools.evidence]
         coverage = tools.coverage()
         warning = [
@@ -279,12 +279,13 @@ class Workspace:
         ]
         if any(m["observed_state"] != "current" for m in sources):
             warning.append("本次依据包含历史缓存或尚未确认的邮件，不能证明它们仍在当前同步文件夹中")
-        content = ("覆盖提示：" + "；".join(warning) + "\n\n" if warning else "") + answer["answer"]
+        content, presentation = present_query_answer(answer, tools.evidence, warning)
         with self.db.session() as session:
             row = Message(
                 conversation_id=conversation_id,
                 role="assistant",
                 content=content,
+                presentation=presentation,
                 sources=[
                     {
                         k: m[k]
@@ -294,6 +295,8 @@ class Workspace:
                             "sender",
                             "account_label",
                             "sent_at",
+                            "received_at",
+                            "body_truncated",
                             "folder",
                             "observed_state",
                             "last_observed_at",

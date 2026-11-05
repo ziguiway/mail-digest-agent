@@ -63,6 +63,8 @@ pnpm test:e2e
 
 真实查询与模型工具探测通过 `AgentlyIntelligence.bind_actions()` 统一绑定原生 Action，依据函数签名生成工具 Schema，并显式传入兼容提供者的 `request_options.tools`。查询限制四轮，保留实际读取来源校验。`test_query_recovery.py` 包含真实 Agently 与模拟 HTTP 流的协议回归，`query-recovery.spec.ts` 覆盖重试及恢复状态；详细证据见[智能查询修复验收](verification/2026-11-05-query-recovery.md)。
 
+查询回答支持带版本的 `presentation` 表格，模型返回的行须与已读引用一一对应；来源标题和收件时间由服务端关联。文字 `content` 保持完整，供历史上下文与飞书使用；旧消息按原文展示。表格及迁移测试见 `test_query_tables.py`、`query-tables.spec.ts`，实现与部署证据见[聊天内简表验收](verification/2026-11-05-query-tables.md)。
+
 后端 MCP 契约测试实际运行已安装版本的账号管理 CLI 与 stdio 子进程，使用临时目录、无效测试邮箱和本地地址，不执行 IMAP 登录。同步测试覆盖收件时间与 Date 头分离、超过 1,000 封的覆盖限制、缺少收件时间、分页冻结、UID 变化和部分同步水位。它们不证明真实 QQ／网易或真实模型可用。
 
 飞书说明见[网页绑定与恢复](feishu.md)。后端飞书测试使用可执行 CLI 替身，通过实际子进程管道验证授权链接、二维码文件、配对、消息事件、回复、分段回执和重启恢复；浏览器新增绑定流程与不确定发送的明确重试选择测试。实际 CLI 只进行了离线二维码生成检查，没有创建真实应用或发送真实消息。开发环境可用 `MAIL_ASSISTANT_LARK_COMMAND` 指定已安装 CLI 的完整可执行路径。

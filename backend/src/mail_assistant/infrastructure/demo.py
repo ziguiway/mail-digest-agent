@@ -154,6 +154,27 @@ class DemoIntelligence:
                 "mail_ids": [m["id"] for m in thread["linked"]],
             }
         read = await tools.read_mails([m["id"] for m in mails[:10]])
+        if any(word in question for word in ("需要", "处理", "待办", "优先")):
+            rows = []
+            for mail in read["mails"]:
+                match = re.search(r"行动：([^\n]+)", mail["body"])
+                needs_action = bool(match) or "请准备" in mail["body"]
+                rows.append(
+                    {
+                        "mail_id": mail["id"],
+                        "handling": "action" if needs_action else "notice",
+                        "action": match[1]
+                        if match
+                        else "准备研究进展，核对会议安排。"
+                        if needs_action
+                        else "按需阅读，无需新增操作。",
+                    }
+                )
+            return {
+                "answer": "已检查样例邮箱近期来信，以下是需要关注的事项和下一步建议。",
+                "mail_ids": [mail["id"] for mail in read["mails"]],
+                "rows": rows,
+            }
         return {
             "answer": "根据样例邮件，找到以下信息：\n\n"
             + "\n\n".join(f"{m['subject']}\n{m['body']}" for m in read["mails"]),

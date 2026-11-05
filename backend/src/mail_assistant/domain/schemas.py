@@ -203,6 +203,26 @@ class ConversationView(BaseModel):
     created_at: str
 
 
+class QueryTableRow(BaseModel):
+    mail_id: str = Field(min_length=1, max_length=80)
+    handling: Literal["action", "confirm", "waiting", "notice"]
+    action: str = Field(min_length=1, max_length=600)
+
+
+class QueryAnswer(BaseModel):
+    answer: str = Field(min_length=1)
+    mail_ids: list[str] = Field(max_length=50)
+    rows: list[QueryTableRow] = Field(default_factory=list, max_length=50)
+
+
+class QueryPresentation(BaseModel):
+    version: Literal[1] = 1
+    type: Literal["mail_table"] = "mail_table"
+    summary: str
+    rows: list[QueryTableRow]
+    notes: list[str] = Field(default_factory=list)
+
+
 class MessageView(BaseModel):
     id: str
     conversation_id: str
@@ -211,6 +231,7 @@ class MessageView(BaseModel):
     sources: list[dict]
     task_id: str | None
     created_at: str
+    presentation: QueryPresentation | None = None
 
 
 class FeishuInput(BaseModel):

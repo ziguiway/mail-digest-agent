@@ -21,6 +21,8 @@ export type Source = {
   sender: string;
   account_label: string;
   sent_at: string;
+  received_at?: string | null;
+  body_truncated?: boolean;
 };
 export type Auth = { initialized: boolean; authenticated: boolean; mode: 'live' | 'demo' };
 export type Overview = {

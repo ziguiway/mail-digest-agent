@@ -13,6 +13,7 @@ from pydantic import TypeAdapter, create_model
 from . import prompts
 from ..domain.errors import AppError
 from ..domain.schemas import DigestItem
+from ..domain.query_answers import validate_query_answer
 
 
 def model_failure(exc, message, code):
@@ -201,6 +202,13 @@ class AgentlyIntelligence:
                 {
                     "answer": (str, "给用户的中文回答", True),
                     "mail_ids": [(str, "本轮实际读到的邮件 id")],
+                    "rows": [
+                        {
+                            "mail_id": (str, "本轮已读且列入 mail_ids 的邮件 id", True),
+                            "handling": (str, "action / confirm / waiting / notice", True),
+                            "action": (str, "简短下一步建议，不编造期限或已完成状态", True),
+                        }
+                    ],
                 }
             )
         )
@@ -214,15 +222,7 @@ class AgentlyIntelligence:
             raise AppError(
                 "模型未调用邮件检索工具，请检查模型的工具调用能力", "tool_calling_unavailable"
             )
-        if (
-            not isinstance(data, dict)
-            or not isinstance(data.get("answer"), str)
-            or not isinstance(data.get("mail_ids"), list)
-        ):
-            raise AppError("模型回答格式不完整，请重试", "model_output_error")
-        if set(data["mail_ids"]) - set(tools.evidence):
-            raise AppError("回答引用了未读取的邮件，结果未保存，请重试", "invalid_sources")
-        return data
+        return validate_query_answer(data, tools.evidence)
 
     async def probe(self):
         profile = self.db.get("model", {})

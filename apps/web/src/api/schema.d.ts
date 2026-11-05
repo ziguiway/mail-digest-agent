@@ -1074,6 +1074,7 @@ export interface components {
             task_id: string | null;
             /** Created At */
             created_at: string;
+            presentation?: components["schemas"]["QueryPresentation"] | null;
         };
         /** ModelInput */
         ModelInput: {
@@ -1120,6 +1121,39 @@ export interface components {
              * @default 0
              */
             revision: number;
+        };
+        /** QueryPresentation */
+        QueryPresentation: {
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            /**
+             * Type
+             * @default mail_table
+             * @constant
+             */
+            type: "mail_table";
+            /** Summary */
+            summary: string;
+            /** Rows */
+            rows: components["schemas"]["QueryTableRow"][];
+            /** Notes */
+            notes?: string[];
+        };
+        /** QueryTableRow */
+        QueryTableRow: {
+            /** Mail Id */
+            mail_id: string;
+            /**
+             * Handling
+             * @enum {string}
+             */
+            handling: "action" | "confirm" | "waiting" | "notice";
+            /** Action */
+            action: string;
         };
         /** QuestionInput */
         QuestionInput: {

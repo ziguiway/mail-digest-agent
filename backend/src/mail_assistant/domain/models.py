@@ -145,6 +145,7 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
     sources: Mapped[list] = mapped_column(JSON, default=list)
+    presentation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[str] = mapped_column(String(40), default=stamp)
 

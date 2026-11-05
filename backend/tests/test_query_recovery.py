@@ -214,7 +214,18 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
         else:
             delta = {
                 "content": json.dumps(
-                    {"answer": "请提交课程作业。", "mail_ids": ["mail-1"]}, ensure_ascii=False
+                    {
+                        "answer": "有一项课程作业需要处理。",
+                        "mail_ids": ["mail-1"],
+                        "rows": [
+                            {
+                                "mail_id": "mail-1",
+                                "handling": "action",
+                                "action": "请提交课程作业。",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
                 )
             }
         chunks = [
@@ -246,7 +257,11 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
     try:
         result = await asyncio.wait_for(w.intelligence.answer("我需要做什么？", [], mail_tools), 20)
         assert mail_tools.calls == ["search_mails", "read_mails"]
-        assert result == {"answer": "请提交课程作业。", "mail_ids": ["mail-1"]}
+        assert result == {
+            "answer": "有一项课程作业需要处理。",
+            "mail_ids": ["mail-1"],
+            "rows": [{"mail_id": "mail-1", "handling": "action", "action": "请提交课程作业。"}],
+        }
         assert 3 <= len(requests) <= 6
     finally:
         await w.close()

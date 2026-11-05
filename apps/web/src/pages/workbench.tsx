@@ -44,6 +44,7 @@ import {
 } from '@/components/shared';
 import { useJob } from '@/hooks/use-job';
 import { DeliveryHistory } from '@/components/delivery-history';
+import { hasQueryTable, QueryAnswer } from '@/components/query-answer';
 import { time } from '@/lib/utils';
 
 const digestItems = (digest?: Digest | null) => (digest?.items || []) as unknown as DigestItem[];
@@ -492,8 +493,12 @@ export function ChatPage() {
                   <span className="message-role">
                     {message.role === 'user' ? '你' : '来信助手'}
                   </span>
-                  <div className="message-content">{message.content}</div>
-                  {!!message.sources.length && (
+                  {message.role === 'assistant' && hasQueryTable(message) ? (
+                    <QueryAnswer message={message} onReadMail={setMailId} />
+                  ) : (
+                    <div className="message-content">{message.content}</div>
+                  )}
+                  {!!message.sources.length && !hasQueryTable(message) && (
                     <div className="source-list">
                       <p>邮件依据 · {message.sources.length}</p>
                       {(message.sources as unknown as Source[]).map((source) => (
