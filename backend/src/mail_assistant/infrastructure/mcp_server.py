@@ -8,6 +8,8 @@ The bounded snapshot can be partial, even when all returned rows were read.
 from collections import OrderedDict
 from dataclasses import asdict
 from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Annotated
 
 from mcp.types import ToolAnnotations
@@ -51,36 +53,47 @@ def snapshot_payload(snapshot):
         warnings.append("上游只返回有界快照，尚未证明覆盖整个邮箱；窗口上限或同步变化可能遗漏邮件")
     elif snapshot.state.message_count != len(rows):
         warnings.append("快照数量与邮箱状态不一致，不能确认完整覆盖")
-    if snapshot.state.uidvalidity is None or snapshot.state.uidnext is None:
-        warnings.append("邮箱未提供完整 UID 状态，不能确认可恢复的同步覆盖")
+    uids = sorted(int(row["email_id"]) for row in rows)
+    valid_inventory = (
+        len(set(uids)) == len(uids)
+        and all(0 < uid <= 2**32 - 1 for uid in uids)
+        and snapshot.state.message_count == len(uids)
+    )
+    if not valid_inventory:
+        warnings.append("邮件编号清单无法完整核对，请重新同步")
+    if snapshot.state.uidvalidity is None:
+        warnings.append("邮箱未提供 UIDVALIDITY，邮件编号的有效期尚未确认")
     if any(row["received_at"] is None for row in rows):
         warnings.append("部分邮件缺少服务器收件时间，时间范围无法完整确认")
+    membership_complete = bool(
+        snapshot.complete and snapshot.state.uidvalidity is not None and valid_inventory
+    )
+    diagnostics = []
+    if snapshot.state.uidnext is None:
+        diagnostics.append("服务端未提供 UIDNEXT，使用完整邮件编号清单核对同步前后状态")
     return {
         "emails": rows,
-        "membership_complete": bool(
-            snapshot.complete
-            and snapshot.state.uidvalidity is not None
-            and snapshot.state.uidnext is not None
-            and snapshot.state.message_count == len(rows)
-            and len({r["email_id"] for r in rows}) == len(rows)
-        ),
+        "membership_complete": membership_complete,
         "coverage_state": "complete"
         if snapshot.complete and not warnings
         else "partial"
         if not snapshot.complete
         else "unknown",
         "warnings": warnings,
-        "mailbox_state": asdict(snapshot.state),
+        "mailbox_state": asdict(snapshot.state)
+        | {
+            "uid_digest": hashlib.sha256(
+                json.dumps(uids, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "inventory_complete": membership_complete,
+        },
+        "sync_method": "uid_inventory" if snapshot.state.uidnext is None else "uid_state",
+        "diagnostics": diagnostics,
         "observed_at": snapshot.observed_at.isoformat(),
     }
 
 
-@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
-async def workspace_mailbox_snapshot(
-    account_name: Annotated[str, Field(min_length=1, max_length=200)],
-    mailbox: Annotated[str, Field(min_length=1, max_length=200)] = "INBOX",
-) -> dict:
-    """Observe bounded UID metadata, server receive times, and explicit coverage."""
+async def read_snapshot(account_name, mailbox):
     opened = access(account_name)
     if opened.account.allowed_senders:
         raise ValueError("工作台快照尚不支持上游发件人策略，请使用独立的工作台账号目录")
@@ -94,12 +107,25 @@ async def workspace_mailbox_snapshot(
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
+async def workspace_mailbox_snapshot(
+    account_name: Annotated[str, Field(min_length=1, max_length=200)],
+    mailbox: Annotated[str, Field(min_length=1, max_length=200)] = "INBOX",
+) -> dict:
+    """Observe bounded UID metadata, server receive times, and explicit coverage."""
+    return await read_snapshot(account_name, mailbox)
+
+
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False))
 async def workspace_mailbox_state(
     account_name: Annotated[str, Field(min_length=1, max_length=200)],
     mailbox: Annotated[str, Field(min_length=1, max_length=200)] = "INBOX",
 ) -> dict:
-    """Re-observe UIDVALIDITY, UIDNEXT, and count after body reads."""
-    return asdict(await access(account_name).provider.mailbox_state(mailbox))
+    """Re-observe UIDVALIDITY and the UID inventory after body reads.
+
+    Metadata rows may be reused within a real UIDVALIDITY, but the provider
+    always obtains a fresh UID list. Equal counts alone cannot verify identity.
+    """
+    return (await read_snapshot(account_name, mailbox))["mailbox_state"]
 
 
 if __name__ == "__main__":

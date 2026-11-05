@@ -61,7 +61,12 @@ class Tasks:
                 update(Task)
                 .where(Task.id == candidate, Task.status == "queued")
                 .values(
-                    status="running", started_at=now, phase="开始执行", attempts=Task.attempts + 1
+                    status="running",
+                    started_at=now,
+                    phase="开始执行",
+                    attempts=Task.attempts + 1,
+                    error=None,
+                    error_code=None,
                 )
             )
             if result.rowcount != 1:

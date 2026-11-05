@@ -239,12 +239,22 @@ class Mailboxes:
             ).hexdigest()[:24]
         )
         received = normalize_time(message.get("received_at"))
+        epoch = message.get("source_epoch")
         refs = re.findall(
             r"<[^<>\s]+>",
             str(message.get("references", "")) + " " + str(message.get("in_reply_to", "")),
         )
         with self.db.session() as session:
             row = session.get(Mail, mail_id)
+            # A copied message may keep its Message-ID but receive another UID.
+            if row and epoch and row.source_epoch == epoch and row.source_id != source_id:
+                mail_id = (
+                    "m_"
+                    + hashlib.sha256(
+                        f"{account['id']}:{account['folder']}:{epoch}:{source_id}".encode()
+                    ).hexdigest()[:24]
+                )
+                row = session.get(Mail, mail_id)
             if row is None:
                 row = Mail(
                     id=mail_id,
@@ -263,6 +273,7 @@ class Mailboxes:
                     pending_digest=bool(
                         received and (not initial or not digest_start or received >= digest_start)
                     ),
+                    source_epoch=epoch,
                 )
                 session.add(row)
             else:
@@ -277,7 +288,35 @@ class Mailboxes:
                         not initial or not digest_start or received >= digest_start
                     )
                 row.received_at = received or row.received_at
+                row.source_epoch = epoch or row.source_epoch
         return mail_id
+
+    def cached_sources(self, account, rows, state):
+        """Only reuse immutable bodies at the same folder/UIDVALIDITY/UID."""
+        epoch = (state or {}).get("uidvalidity")
+        if epoch is None:
+            return {}
+        by_uid = {str(row["email_id"]): row for row in rows}
+        found = {}
+        with self.db.session() as session:
+            for mail in session.scalars(
+                select(Mail).where(
+                    Mail.account_id == account["id"],
+                    Mail.folder == account["folder"],
+                    Mail.source_epoch == str(epoch),
+                    Mail.source_id.in_(by_uid),
+                )
+            ):
+                source = by_uid[mail.source_id]
+                if source.get("message_id") and mail.message_id != source["message_id"]:
+                    raise AppError(
+                        "相同 UID 的邮件身份发生变化，请重新同步核对",
+                        "snapshot_identity_conflict",
+                    )
+                if mail.source_id in found:
+                    raise AppError("缓存中的邮件编号重复，请重新核对", "snapshot_identity_conflict")
+                found[mail.source_id] = mail.id
+        return found
 
     def apply_observation(
         self, session, account, state, observations, fetched_ids, membership_complete
@@ -298,10 +337,7 @@ class Mailboxes:
             if item.get("message_id"):
                 by_mid.setdefault(item["message_id"], []).append(item)
         full = bool(
-            membership_complete is True
-            and epoch
-            and state.get("uidnext") is not None
-            and state.get("message_count") == len(by_uid)
+            membership_complete is True and epoch and state.get("message_count") == len(by_uid)
         )
         observed_at = stamp()
         rows = session.scalars(
@@ -336,7 +372,7 @@ class Mailboxes:
                 matches = by_mid.get(row.message_id, [])
                 item = next(
                     (m for m in matches if str(m["email_id"]) == row.source_id),
-                    matches[0] if matches else None,
+                    matches[0] if not same_epoch and len(matches) == 1 else None,
                 )
                 if not item and same_epoch:
                     candidate = by_uid.get(row.source_id)
@@ -351,7 +387,28 @@ class Mailboxes:
             elif not same_epoch:
                 row.observed_state = "unknown"
 
-    async def sync(self, account_ids=None, progress=None):
+    async def sync(self, account_ids=None, progress=None, *, range_start=None):
+        selected = [account["id"] for account in self.selected(account_ids)]
+        if not selected:
+            return []
+        pending, outcomes = selected, {}
+        for attempt in range(1, 4):
+            results = await self._sync_once(pending, progress, range_start=range_start)
+            for result in results:
+                outcomes[result["account_id"]] = result | {"attempts": attempt}
+            pending = [
+                result["account_id"]
+                for result in results
+                if not result["ok"]
+                and result.get("code") in {"mailbox_changed", "incomplete_batch"}
+            ]
+            if not pending or attempt == 3:
+                break
+            if progress:
+                await progress(f"邮件已读取，正在重新核对同步进度（{attempt + 1}/3）")
+        return [outcomes[account_id] for account_id in selected if account_id in outcomes]
+
+    async def _sync_once(self, account_ids, progress, *, range_start=None):
         results = []
         schedule = ScheduleInput(**self.db.get("schedule", {}))
         for account in self.selected(account_ids):
@@ -383,14 +440,17 @@ class Mailboxes:
                     if initial
                     else datetime.fromisoformat(account["last_sync_at"]) - timedelta(minutes=10)
                 )
+                if range_start:
+                    since = min(since, datetime.fromisoformat(range_start))
                 end_at = normalize_time(now.isoformat())
                 since_at = normalize_time(since.isoformat())
                 digest_start = normalize_time(
                     (now - timedelta(hours=schedule.first_digest_hours)).isoformat()
                 )
-                fetched, expected, seen = 0, None, set()
+                fetched, reused, expected, seen = 0, 0, None, set()
                 fetched_ids, observations, membership_complete = set(), [], False
                 coverage_state, warnings, observed_state = "unknown", [], None
+                sync_method, diagnostics = "uid_state", []
                 with self.db.session() as session:
                     previous = session.get(Coverage, account["id"])
                     previous_state = (
@@ -412,8 +472,25 @@ class Mailboxes:
                                     account, since_at, end_at, page
                                 )
                                 observed_state = metadata.get("mailbox_state")
+                            # Revisit the configured range in compatibility mode;
+                            # cached bodies make this a metadata-only scan for old UIDs.
+                            lookback = normalize_time(
+                                (now - timedelta(days=schedule.initial_days)).isoformat()
+                            )
+                            if (
+                                observed_state
+                                and observed_state.get("uidnext") is None
+                                and since_at > lookback
+                            ):
+                                since_at = lookback
+                                metadata = await self.provider.metadata(
+                                    account, since_at, end_at, page
+                                )
+                                observed_state = metadata.get("mailbox_state")
                             coverage_state = metadata.get("coverage_state", "unknown")
                             warnings = list(metadata.get("warnings", []))
+                            sync_method = metadata.get("sync_method", "uid_state")
+                            diagnostics = list(metadata.get("diagnostics", []))
                             observations = metadata.get("observations", [])
                             membership_complete = metadata.get("membership_complete", False)
                             if coverage_state != "complete" and not warnings:
@@ -438,9 +515,15 @@ class Mailboxes:
                         by_id = {str(m["email_id"]): m for m in rows}
                         if "observations" not in metadata:
                             observations.extend(rows)
-                        for start in range(0, len(ids), 8):
-                            batch = await self.provider.bodies(account, ids[start : start + 8])
-                            if {str(m["email_id"]) for m in batch} != set(ids[start : start + 8]):
+                        cached = self.cached_sources(account, rows, observed_state)
+                        fetched_ids.update(cached.values())
+                        reused += len(cached)
+                        needed = [uid for uid in ids if uid not in cached]
+                        for start in range(0, len(needed), 8):
+                            batch = await self.provider.bodies(account, needed[start : start + 8])
+                            if len(batch) != len(needed[start : start + 8]) or {
+                                str(m["email_id"]) for m in batch
+                            } != set(needed[start : start + 8]):
                                 raise AppError(
                                     "部分邮件正文未读取成功，请重试",
                                     "incomplete_batch",
@@ -458,7 +541,10 @@ class Mailboxes:
                                     )
                                 message = message | {
                                     "received_at": source.get("received_at")
-                                    or message.get("received_at")
+                                    or message.get("received_at"),
+                                    "source_epoch": str(observed_state["uidvalidity"])
+                                    if (observed_state or {}).get("uidvalidity") is not None
+                                    else None,
                                 }
                                 mail_id = self.upsert(
                                     account, message, initial=initial, digest_start=digest_start
@@ -513,6 +599,10 @@ class Mailboxes:
                             "coverage_state": coverage_state,
                             "folder": account["folder"],
                             "membership_complete": membership_complete,
+                            "sync_method": sync_method,
+                            "diagnostics": diagnostics,
+                            "verified_at": stamp(),
+                            "reused": reused,
                         }
                         coverage.warnings = warnings
                     results.append(
@@ -523,6 +613,8 @@ class Mailboxes:
                             "coverage_state": coverage_state,
                             "warnings": warnings,
                             "fetched": fetched,
+                            "reused": reused,
+                            "sync_method": sync_method,
                             "since": since_at,
                             "before": end_at,
                         }

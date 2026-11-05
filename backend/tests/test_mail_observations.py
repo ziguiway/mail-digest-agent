@@ -119,6 +119,8 @@ async def test_failed_state_verification_never_promotes_fetched_bodies(workspace
         from mail_assistant.domain.models import Account
 
         session.get(Account, account["id"]).last_sync_at = None
+        for mail in session.scalars(select(Mail).where(Mail.account_id == account["id"])):
+            mail.source_epoch = None
 
     async def changed(account, state):
         raise AppError("快照在读取后变化", "mailbox_changed", retryable=True)

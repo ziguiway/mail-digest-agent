@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy import select
 from .domain.models import Task, stamp
-from .domain.schemas import ScheduleInput
+from .domain.schemas import ScheduleInput, DigestInput
 
 LOG = logging.getLogger(__name__)
 
@@ -33,9 +33,11 @@ class Worker:
         if not active_ids:
             return
         if config.enabled and now.strftime("%H:%M") >= config.digest_time:
-            w.tasks.enqueue(
-                "digest",
-                {"account_ids": active_ids, "deliver": True},
+            hour, minute = map(int, config.digest_time.split(":"))
+            w.digests.enqueue(
+                DigestInput(account_ids=active_ids),
+                cutoff=now.replace(hour=hour, minute=minute, second=0, microsecond=0),
+                extra={"deliver": True},
                 key="daily:" + now.date().isoformat(),
             )
         if not config.sync_enabled:

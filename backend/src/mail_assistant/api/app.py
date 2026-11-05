@@ -35,6 +35,7 @@ from ..domain.schemas import (
     BootstrapRequest,
     ConversationView,
     DigestView,
+    DigestInput,
     FeishuInput,
     LoginRequest,
     MailView,
@@ -328,13 +329,7 @@ def create_app(settings=None, *, embedded_worker=False):
 
     @app.get("/api/v1/digests", response_model=list[DigestView])
     def digests(w=Depends(owner)):
-        with w.db.session() as session:
-            return [
-                record(d)
-                for d in session.scalars(
-                    select(Digest).order_by(Digest.created_at.desc()).limit(100)
-                )
-            ]
+        return w.digests.list()
 
     @app.get("/api/v1/digests/{digest_id}", response_model=DigestView)
     def digest(digest_id: str, w=Depends(owner)):
@@ -342,12 +337,26 @@ def create_app(settings=None, *, embedded_worker=False):
             row = session.get(Digest, digest_id)
             if not row:
                 raise AppError("摘要不存在", "digest_not_found", status=404)
-            return record(row)
+            return w.digests.view(row, session)
 
     @app.post("/api/v1/digests", response_model=TaskView, status_code=202)
-    def create_digest(form: TaskInput, w=Depends(owner)):
-        w.mailboxes.selected(form.account_ids or None)
-        return w.tasks.enqueue("digest", form.model_dump())
+    def create_digest(form: DigestInput, w=Depends(owner)):
+        return w.digests.enqueue(form)
+
+    @app.get("/api/v1/digests/{digest_id}/sources/{mail_id}", response_model=MailView)
+    def digest_source(digest_id: str, mail_id: str, w=Depends(owner)):
+        with w.db.session() as session:
+            digest = session.get(Digest, digest_id)
+            if not digest or not any(i["mail_id"] == mail_id for i in digest.items):
+                raise AppError("这封邮件不属于该摘要", "source_not_found", status=404)
+            source = next((m for m in digest.sources if m["id"] == mail_id), None)
+            if source:
+                return source
+            mail = session.get(Mail, mail_id)
+            if not mail:
+                raise AppError("找不到这封邮件", "source_not_found", status=404)
+            account = session.get(Account, mail.account_id)
+            return w.mailboxes.present(mail, account.label, account.folder, account.enabled)
 
     @app.get("/api/v1/conversations", response_model=list[ConversationView])
     def conversations(w=Depends(owner)):
@@ -437,7 +446,6 @@ def create_app(settings=None, *, embedded_worker=False):
     def overview(w=Depends(owner)):
         with w.db.session() as session:
             mail_count = session.scalar(select(func.count()).select_from(Mail))
-            digest = session.scalar(select(Digest).order_by(Digest.created_at.desc()).limit(1))
             recent_tasks = [
                 record(t)
                 for t in session.scalars(select(Task).order_by(Task.created_at.desc()).limit(5))
@@ -445,7 +453,7 @@ def create_app(settings=None, *, embedded_worker=False):
         return {
             "accounts": w.accounts.list(),
             "mail_count": mail_count,
-            "latest_digest": record(digest) if digest else None,
+            "latest_digest": w.digests.latest(),
             "tasks": recent_tasks,
             "schedule": ScheduleInput(**w.db.get("schedule", {})).model_dump(),
             "worker": health(w)["worker"],

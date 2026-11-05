@@ -233,6 +233,9 @@ async def test_missing_body_does_not_advance_the_account_watermark(workspace):
         session.get(Account, "demo_qq").last_sync_at = (
             datetime.now(timezone.utc) - timedelta(hours=1)
         ).isoformat()
+        # This scenario needs an uncached body; a valid cache requires no download.
+        for mail in session.scalars(select(Mail).where(Mail.account_id == "demo_qq")):
+            mail.source_epoch = None
     previous = w.accounts.get("demo_qq")["last_sync_at"]
     w.provider.bodies = AsyncMock(return_value=[])
     result = await w.mailboxes.sync(["demo_qq"])

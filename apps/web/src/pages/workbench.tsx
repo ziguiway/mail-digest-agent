@@ -36,6 +36,7 @@ import {
   JobNotice,
   Loading,
   MailDialog,
+  MailboxSyncStatus,
   CacheStatus,
   PageHeading,
   Priority,
@@ -43,25 +44,9 @@ import {
 } from '@/components/shared';
 import { useJob } from '@/hooks/use-job';
 import { DeliveryHistory } from '@/components/delivery-history';
-import type { FeishuState } from './feishu';
-import { time, statusText } from '@/lib/utils';
+import { time } from '@/lib/utils';
 
 const digestItems = (digest?: Digest | null) => (digest?.items || []) as unknown as DigestItem[];
-function digestWarnings(digest?: Digest | null): string[] {
-  return (digest?.coverage || []).flatMap((value) => {
-    const row = value as { label?: string; error?: string; warnings?: string[] };
-    return row.error
-      ? [`${row.label || '邮箱'}：${row.error}`]
-      : (row.warnings || []).map((text) => `${row.label || '邮箱'}：${text}`);
-  });
-}
-function useDigests() {
-  return useQuery({
-    queryKey: ['digests'],
-    queryFn: () => api<Digest[]>('/digests'),
-    refetchInterval: 2500,
-  });
-}
 
 export function OverviewPage() {
   const { data, error } = useQuery({
@@ -82,9 +67,19 @@ export function OverviewPage() {
         title="让重要的来信，先被看见。"
         description="把分散的邮箱放在一起，读懂事项，再决定从哪里开始。"
         actions={
-          <Button onClick={() => job.run(() => post<Task>('/digests'))} disabled={job.busy}>
+          <Button
+            onClick={() =>
+              job.run(() =>
+                post<Task>('/digests', {
+                  account_ids: data.accounts.filter((a) => a.enabled).map((a) => a.id),
+                  request_id: crypto.randomUUID(),
+                }),
+              )
+            }
+            disabled={job.busy}
+          >
             <Sparkle />
-            生成摘要
+            刷新摘要
           </Button>
         }
       />
@@ -181,8 +176,8 @@ export function OverviewPage() {
                   ))
               ) : (
                 <Empty
-                  title="这次没有新增待汇总邮件"
-                  description="新的来信会在下次同步后出现在这里。"
+                  title="最近 24 小时没有邮件"
+                  description="所选时间范围内没有邮件，可随时刷新检查。"
                 />
               )}
             </>
@@ -215,6 +210,7 @@ export function OverviewPage() {
                   <div>
                     <strong>{a.label}</strong>
                     <p>{a.email}</p>
+                    <MailboxSyncStatus account={a} />
                   </div>
                   <span
                     className={`connection-dot ${a.error ? 'bad' : a.status === 'verified' ? 'good' : ''}`}
@@ -403,152 +399,7 @@ export function MailsPage() {
   );
 }
 
-export function DigestsPage() {
-  const { data, error } = useDigests();
-  const [selected, setSelected] = useState<string | null>(null);
-  const [filter, setFilter] = useState('all');
-  const [mailId, setMailId] = useState<string | null>(null);
-  const job = useJob();
-  const sending = useJob('digest-send');
-  const feishu = useQuery({
-    queryKey: ['feishu'],
-    queryFn: () => api<FeishuState>('/settings/feishu'),
-  });
-  const digest = data?.find((d) => d.id === selected) || data?.[0];
-  const items = digestItems(digest);
-  return (
-    <>
-      <PageHeading
-        title="来信摘要"
-        description="把邮件变成清楚的事项，按优先级安排下一步。"
-        actions={
-          <Button disabled={job.busy} onClick={() => job.run(() => post<Task>('/digests'))}>
-            <Sparkle />
-            生成新摘要
-          </Button>
-        }
-      />
-      <ErrorNotice>{error?.message || job.error}</ErrorNotice>
-      <JobNotice busy={job.busy} phase={job.job?.phase} />
-      {!data ? (
-        <Loading />
-      ) : !data.length ? (
-        <section className="panel">
-          <Empty
-            title="第一份摘要，还在等你"
-            description="完成模型与邮箱配置后，试着生成一份摘要。"
-            action={
-              <Button variant="outline" asChild>
-                <Link to="/setup">打开配置向导</Link>
-              </Button>
-            }
-          />
-        </section>
-      ) : (
-        <div className="digest-layout">
-          <aside className="digest-history">
-            <p className="eyebrow">HISTORY</p>
-            {data.map((d) => (
-              <button
-                key={d.id}
-                className={d.id === digest?.id ? 'active' : ''}
-                onClick={() => setSelected(d.id)}
-              >
-                <strong>{d.title}</strong>
-                <span>
-                  {time(d.created_at)} · {d.items.length} 件事项
-                </span>
-              </button>
-            ))}
-          </aside>
-          <section className="panel digest-detail">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">MAIL BRIEFING</p>
-                <h2>{digest?.title}</h2>
-              </div>
-              <Status value={digest?.status || 'generated'} />
-            </div>
-            <p className="muted">
-              {time(digest?.created_at)} 生成 ·{' '}
-              {digest?.delivery_status === 'not_configured'
-                ? '保存在工作台，飞书尚未启用'
-                : '推送状态：' +
-                  (statusText[digest?.delivery_status || ''] || digest?.delivery_status)}
-            </p>
-            {feishu.data?.configured && (
-              <div className="digest-send-action">
-                <p className="field-hint">
-                  以应用机器人身份推送到配对单聊：<code>{feishu.data.chat_id || '尚未配对'}</code>
-                </p>
-                <Button
-                  variant="outline"
-                  disabled={!feishu.data.enabled || sending.busy || !digest}
-                  onClick={() =>
-                    sending.run(() =>
-                      post<Task>(`/digests/${digest!.id}/send`, {
-                        binding_id: feishu.data!.binding_id,
-                      }),
-                    )
-                  }
-                >
-                  推送这份摘要到飞书
-                </Button>
-                <ErrorNotice>{sending.error}</ErrorNotice>
-                <JobNotice busy={sending.busy} phase={sending.job?.phase} />
-              </div>
-            )}
-            <CoverageNotice warnings={digestWarnings(digest)} />
-            <div className="filter-tabs" role="tablist" aria-label="摘要优先级">
-              {[
-                ['all', '全部'],
-                ['high', '优先处理'],
-                ['medium', '需要关注'],
-                ['low', '信息通知'],
-              ].map(([key, label]) => (
-                <button
-                  role="tab"
-                  aria-selected={filter === key}
-                  className={filter === key ? 'active' : ''}
-                  key={key}
-                  onClick={() => setFilter(key)}
-                >
-                  {label}
-                  <span>
-                    {key === 'all' ? items.length : items.filter((i) => i.priority === key).length}
-                  </span>
-                </button>
-              ))}
-            </div>
-            {items
-              .filter((i) => filter === 'all' || i.priority === filter)
-              .map((item) => (
-                <article className="digest-item" key={item.mail_id}>
-                  <Priority value={item.priority} />
-                  <h3>{item.summary}</h3>
-                  <p>{item.action}</p>
-                  <div className="item-facts">
-                    <span>
-                      <Clock size={15} />
-                      {item.deadline || '截止时间未明确'}
-                    </span>
-                    <Button variant="ghost" size="sm" onClick={() => setMailId(item.mail_id)}>
-                      查看邮件依据 <ArrowRight size={14} />
-                    </Button>
-                  </div>
-                  <div className="reason">判断依据：{item.reason}</div>
-                </article>
-              ))}
-            {!items.filter((i) => filter === 'all' || i.priority === filter).length && (
-              <Empty title="这一类暂无事项" description="切换分类查看其他邮件，或等待新的来信。" />
-            )}
-          </section>
-        </div>
-      )}
-      <MailDialog id={mailId} onClose={() => setMailId(null)} />
-    </>
-  );
-}
+export { DigestsPage } from './digests';
 
 export function ChatPage() {
   const cache = useQueryClient();

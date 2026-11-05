@@ -1,6 +1,43 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
+test('compatible sync is successful and UIDNEXT stays in collapsed diagnostics', async ({
+  page,
+}) => {
+  await page.route('**/api/v1/accounts', async (route) => {
+    const response = await route.fetch();
+    const accounts = await response.json();
+    await route.fulfill({
+      response,
+      json: accounts.map((account: Record<string, unknown>) =>
+        account.id === 'demo_163'
+          ? {
+              ...account,
+              error: null,
+              sync_complete: true,
+              sync_method: 'uid_inventory',
+              sync_diagnostics: ['服务端未提供 UIDNEXT，使用完整邮件编号清单核对同步前后状态'],
+            }
+          : account,
+      ),
+    });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: '进入演示工作台' }).click();
+  await page.goto('/connections');
+  const account = page.locator('.account-card').filter({ hasText: '@163.com' });
+  await expect(account.getByText('已同步，使用兼容同步方式')).toBeVisible();
+  const note = account.getByText('服务端未提供 UIDNEXT，使用完整邮件编号清单核对同步前后状态');
+  await expect(note).not.toBeVisible();
+  await account.getByText('同步诊断', { exact: true }).click();
+  await expect(note).toBeVisible();
+  await page.screenshot({ path: 'test-results/compatible-sync-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+});
+
 test('sample workspace has actual mail, digest sources, and a multi-turn answer', async ({
   page,
 }) => {

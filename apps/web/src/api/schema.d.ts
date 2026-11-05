@@ -367,6 +367,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/digests/{digest_id}/sources/{mail_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Digest Source */
+        get: operations["digest_source_api_v1_digests__digest_id__sources__mail_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations": {
         parameters: {
             query?: never;
@@ -745,6 +762,10 @@ export interface components {
             last_sync_at: string | null;
             /** Sync Complete */
             sync_complete: boolean;
+            /** Sync Method */
+            sync_method?: ("uid_state" | "uid_inventory") | null;
+            /** Sync Diagnostics */
+            sync_diagnostics?: string[];
             /** Created At */
             created_at: string;
             /** Removed At */
@@ -805,6 +826,18 @@ export interface components {
             /** Task Status */
             task_status?: string | null;
         };
+        /** DigestInput */
+        DigestInput: {
+            /** Account Ids */
+            account_ids?: string[];
+            /**
+             * Force Reanalyze
+             * @default false
+             */
+            force_reanalyze: boolean;
+            /** Request Id */
+            request_id?: string | null;
+        };
         /** DigestView */
         DigestView: {
             /** Id */
@@ -825,6 +858,42 @@ export interface components {
             delivery_status: string;
             /** Created At */
             created_at: string;
+            /** Group Id */
+            group_id?: string | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Legacy
+             * @default true
+             */
+            legacy: boolean;
+            /** Range Start */
+            range_start?: string | null;
+            /** Range End */
+            range_end?: string | null;
+            /**
+             * Timezone
+             * @default Asia/Shanghai
+             */
+            timezone: string;
+            /**
+             * Source Count
+             * @default 0
+             */
+            source_count: number;
+            /** Account Ids */
+            account_ids?: string[];
+            /** Checked At */
+            checked_at?: string | null;
+            /** Checked Start */
+            checked_start?: string | null;
+            /** Checked End */
+            checked_end?: string | null;
+            /** Refresh Error */
+            refresh_error?: string | null;
         };
         /** FeishuBindInput */
         FeishuBindInput: {
@@ -1865,7 +1934,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TaskInput"];
+                "application/json": components["schemas"]["DigestInput"];
             };
         };
         responses: {
@@ -1907,6 +1976,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DigestView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    digest_source_api_v1_digests__digest_id__sources__mail_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                digest_id: string;
+                mail_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailView"];
                 };
             };
             /** @description Validation Error */

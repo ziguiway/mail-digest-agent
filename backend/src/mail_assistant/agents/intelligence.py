@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import get_type_hints
 from agently import Agent, Agently
 from agently.utils import Settings as AgentlySettings
 import httpx
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, create_model
 from . import prompts
 from ..domain.errors import AppError
 from ..domain.schemas import DigestItem
@@ -84,9 +86,38 @@ class AgentlyIntelligence:
         )
         return agent
 
-    async def summarize(self, mails, progress=None):
+    def bind_actions(self, agent, actions, *, max_rounds=4):
+        """Bridge Agently Actions to the compatible provider's native tool payload."""
+        specs = []
+        for action in actions:
+            hints = get_type_hints(action)
+            fields = {
+                name: (
+                    hints[name],
+                    ... if parameter.default is inspect.Parameter.empty else parameter.default,
+                )
+                for name, parameter in inspect.signature(action).parameters.items()
+            }
+            parameters = create_model(action.__name__ + "Input", **fields).model_json_schema()
+            specs.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": action.__name__,
+                        "description": inspect.getdoc(action) or "",
+                        "parameters": parameters,
+                    },
+                }
+            )
+        agent.set_action_loop(max_rounds=max_rounds, planning_protocol="native_tool_calls")
+        # This pinned provider does not map prompt.tools to request_options.tools.
+        # Setting only the Action protocol silently omits the wire-level tools.
+        agent.set_settings("OpenAICompatible.request_options.tools", specs)
+        agent.use_actions(actions, always=True)
+
+    async def summarize(self, mails, progress=None, *, profile=None, analysis_time=None):
         output = []
-        profile = self.db.get("model", {})
+        profile = profile if profile is not None else self.db.get("model", {})
         for offset in range(0, len(mails), 8):
             batch = mails[offset : offset + 8]
             if progress:
@@ -107,21 +138,25 @@ class AgentlyIntelligence:
             request = (
                 agent.create_request()
                 .input(
-                    [
-                        {
-                            k: m.get(k)
-                            for k in (
-                                "id",
-                                "subject",
-                                "sender",
-                                "sent_at",
-                                "received_at",
-                                "body",
-                                "body_truncated",
-                            )
-                        }
-                        for m in batch
-                    ]
+                    {
+                        "analysis_time": analysis_time
+                        or datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+                        "mails": [
+                            {
+                                k: m.get(k)
+                                for k in (
+                                    "id",
+                                    "subject",
+                                    "sender",
+                                    "sent_at",
+                                    "received_at",
+                                    "body",
+                                    "body_truncated",
+                                )
+                            }
+                            for m in batch
+                        ],
+                    }
                 )
                 .instruct(prompts.SUMMARY)
                 .output(schema)
@@ -144,12 +179,19 @@ class AgentlyIntelligence:
 
     async def answer(self, question, history, tools, progress=None):
         agent = self.agent()
-        agent.use_actions([tools.search_mails, tools.read_mails, tools.get_thread])
+        self.bind_actions(agent, [tools.search_mails, tools.read_mails, tools.get_thread])
         turn = (
             agent.input(question)
             .info(
                 {
-                    "history": history,
+                    "history": [
+                        {
+                            key: message[key]
+                            for key in ("role", "content", "sources")
+                            if key in message
+                        }
+                        for message in history
+                    ],
                     "now": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
                     "coverage": tools.coverage(),
                 }
@@ -165,8 +207,8 @@ class AgentlyIntelligence:
         try:
             data = await asyncio.wait_for(turn.get_result().async_get_data(), timeout=150)
         except Exception as exc:
-            raise AppError(
-                "模型查询未完成，请检查模型服务或缩小问题范围", "model_query_error", retryable=True
+            raise model_failure(
+                exc, "模型查询未完成，请稍后重试或检查模型兼容性", "model_query_error"
             ) from exc
         if not tools.calls:
             raise AppError(
@@ -210,7 +252,7 @@ class AgentlyIntelligence:
 
         try:
             tool_agent = self.agent(profile)
-            tool_agent.use_actions([workspace_connection_probe])
+            self.bind_actions(tool_agent, [workspace_connection_probe], max_rounds=2)
             await asyncio.wait_for(
                 tool_agent.input(prompts.TOOL_PROBE).get_result().async_get_data(), 60
             )

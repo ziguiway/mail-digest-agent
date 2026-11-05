@@ -9,6 +9,7 @@ import time
 import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update, func
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +19,7 @@ from ..domain.models import (
     Account,
     Delivery,
     Digest,
+    DigestGroup,
     Mail,
     Message,
     Receipt,
@@ -27,7 +29,7 @@ from ..domain.models import (
     new_id,
     stamp,
 )
-from ..domain.schemas import QuestionInput
+from ..domain.schemas import QuestionInput, DigestInput
 from ..infrastructure.database import record
 from ..infrastructure.lark_cli import (
     LarkCli,
@@ -493,21 +495,39 @@ class Feishu:
                     )
                 )
 
-    def queue_digest(self, digest_id, *, reply_to="", binding_id=None):
+    def queue_digest(
+        self, digest_id, *, reply_to="", binding_id=None, range_start=None, range_end=None
+    ):
         with self.w.db.session() as session:
             digest = session.get(Digest, digest_id)
             if not digest:
                 raise AppError("摘要不存在", "digest_not_found", status=404)
+            if not digest.items:
+                raise AppError("摘要范围内没有邮件，无需推送", "empty_digest")
             text = digest.title + "\n\n"
+            group = session.get(DigestGroup, digest.group_id) if digest.group_id else None
+            if group and group.latest_digest_id == digest.id and group.checked_at:
+                range_start = range_start or group.checked_start
+                range_end = range_end or group.checked_end
+            range_start, range_end = (
+                range_start or digest.range_start,
+                range_end or digest.range_end,
+            )
+            if range_start and range_end:
+                zone = ZoneInfo(digest.timezone)
+                start = datetime.fromisoformat(range_start).astimezone(zone)
+                end = datetime.fromisoformat(range_end).astimezone(zone)
+                text += f"范围：{start:%m/%d %H:%M}—{end:%m/%d %H:%M}（{digest.timezone}）｜版本 {digest.revision}\n\n"
+            sources = {m["id"]: m for m in digest.sources}
             for item in digest.items:
                 mail = session.get(Mail, item["mail_id"])
                 account = session.get(Account, mail.account_id)
+                source = sources.get(mail.id, record(mail))
+                label = source.get("account_label") or account.label
                 priority = {"high": "优先处理", "medium": "需要关注", "low": "信息通知"}[
                     item["priority"]
                 ]
-                text += f"[{priority}] {item['summary']}\n行动：{item['action']}\n截止：{item.get('deadline') or '未明确'}\n判断：{item['reason']}\n依据：{account.label}｜{mail.sender}｜{mail.subject}｜{mail.id}\n\n"
-            if not digest.items:
-                text += "本次没有新增待汇总邮件。\n"
+                text += f"[{priority}] {item['summary']}\n行动：{item['action']}\n截止：{item.get('deadline') or '未明确'}\n判断：{item['reason']}\n依据：{label}｜{source['sender']}｜{source['subject']}｜{mail.id}\n\n"
             for coverage in digest.coverage:
                 warnings = coverage.get("warnings", []) + (
                     [coverage["error"]] if coverage.get("error") else []
@@ -793,9 +813,9 @@ class Feishu:
             return
         key = f"feishu-event:{state['binding_id']}:{event['message_id']}"
         if text in {"/digest", "现在汇总一下", "立即汇总"}:
-            self.w.tasks.enqueue(
-                "digest",
-                {
+            self.w.digests.enqueue(
+                DigestInput(),
+                extra={
                     "deliver": True,
                     "feishu": {
                         "binding_id": state["binding_id"],

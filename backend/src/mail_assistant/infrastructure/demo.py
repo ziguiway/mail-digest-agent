@@ -117,7 +117,7 @@ class DemoProvider:
 
 
 class DemoIntelligence:
-    async def summarize(self, mails, progress=None):
+    async def summarize(self, mails, progress=None, *, profile=None, analysis_time=None):
         items = []
         for mail in mails:
             action = re.search(r"行动[：:]([^\n]+)", mail["body"])

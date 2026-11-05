@@ -805,7 +805,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TaskInput"
+                "$ref": "#/components/schemas/DigestInput"
               }
             }
           },
@@ -857,6 +857,54 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DigestView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/digests/{digest_id}/sources/{mail_id}": {
+      "get": {
+        "summary": "Digest Source",
+        "operationId": "digest_source_api_v1_digests__digest_id__sources__mail_id__get",
+        "parameters": [
+          {
+            "name": "digest_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Digest Id"
+            }
+          },
+          {
+            "name": "mail_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mail Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailView"
                 }
               }
             }
@@ -1637,6 +1685,28 @@
             "type": "boolean",
             "title": "Sync Complete"
           },
+          "sync_method": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "uid_state",
+                  "uid_inventory"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sync Method"
+          },
+          "sync_diagnostics": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Sync Diagnostics"
+          },
           "created_at": {
             "type": "string",
             "title": "Created At"
@@ -1823,6 +1893,38 @@
         ],
         "title": "DeliveryView"
       },
+      "DigestInput": {
+        "properties": {
+          "account_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Account Ids"
+          },
+          "force_reanalyze": {
+            "type": "boolean",
+            "title": "Force Reanalyze",
+            "default": false
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          }
+        },
+        "type": "object",
+        "title": "DigestInput"
+      },
       "DigestView": {
         "properties": {
           "id": {
@@ -1860,6 +1962,110 @@
           "created_at": {
             "type": "string",
             "title": "Created At"
+          },
+          "group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Id"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "default": 0
+          },
+          "legacy": {
+            "type": "boolean",
+            "title": "Legacy",
+            "default": true
+          },
+          "range_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Range Start"
+          },
+          "range_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Range End"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone",
+            "default": "Asia/Shanghai"
+          },
+          "source_count": {
+            "type": "integer",
+            "title": "Source Count",
+            "default": 0
+          },
+          "account_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Account Ids"
+          },
+          "checked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked At"
+          },
+          "checked_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked Start"
+          },
+          "checked_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked End"
+          },
+          "refresh_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refresh Error"
           }
         },
         "type": "object",

@@ -1,6 +1,6 @@
 # 自托管部署
 
-已在 Colima 的 Linux arm64 环境完成实际镜像构建、API／Worker 启动、配置导入、新卷恢复、重启及本地 CA HTTPS 验证，见[部署验证记录](verification/2026-11-04-deployment.md)。一个网易 163 测试账号已通过真实登录与收信，具体范围与 UIDNEXT 限制见[邮箱联调记录](verification/2026-11-04-mailbox-connection.md)。一个 OpenRouter 模型已通过真实结构化输出和测试工具调用，见[模型联调记录](verification/2026-11-04-model-connection.md)。其他邮箱、邮件模型业务效果、飞书、公网证书、持续运行和远端 CI 仍待分别验收。
+已在 Colima 的 Linux arm64 环境完成实际镜像构建、API／Worker 启动、配置导入、新卷恢复、重启及本地 CA HTTPS 验证，见[部署验证记录](verification/2026-11-04-deployment.md)。一个网易 163 测试账号已通过真实登录与收信，缺少 UIDNEXT 时已通过[清单核对兼容同步验收](verification/2026-11-04-uid-inventory-sync.md)。一个 OpenRouter 模型已通过真实结构化输出和测试工具调用，见[模型联调记录](verification/2026-11-04-model-connection.md)。其他邮箱、邮件模型业务效果、飞书、公网证书、持续运行和远端 CI 仍待分别验收。
 
 ## Compose 入口
 

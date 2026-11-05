@@ -22,9 +22,7 @@ def diagnose(args, password):
     if args.send_test:
         stage = "connect"
         try:
-            with smtplib.SMTP_SSL(
-                args.smtp_host, 465, timeout=20, context=context
-            ) as client:
+            with smtplib.SMTP_SSL(args.smtp_host, 465, timeout=20, context=context) as client:
                 stage = "authentication"
                 client.login(args.account, password)
                 report["smtp"] = {"authenticated": True}
@@ -38,9 +36,7 @@ def diagnose(args, password):
                 )
                 stage = "send"
                 refused = client.send_message(message)
-                report["smtp"].update(
-                    accepted=not refused, message_id=message["Message-ID"]
-                )
+                report["smtp"].update(accepted=not refused, message_id=message["Message-ID"])
         except (OSError, smtplib.SMTPException) as exc:
             report.setdefault("smtp", {}).update(
                 stage=stage,

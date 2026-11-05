@@ -960,7 +960,9 @@ h2 {
 .digest-history {
   padding: 9px 0;
 }
-.digest-history > button {
+.digest-history > button,
+.digest-history-group button,
+.legacy-digests button {
   display: block;
   background: transparent;
   border: 0;
@@ -971,7 +973,9 @@ h2 {
   text-align: left;
   border-radius: 0 5px 5px 0;
 }
-.digest-history > button.active {
+.digest-history > button.active,
+.digest-history-group button.active,
+.legacy-digests button.active {
   background: #ecefe3;
   border-left-color: #8c9c75;
 }
@@ -988,7 +992,14 @@ h2 {
   margin-top: 5px;
 }
 .digest-detail {
+  min-width: 0;
   padding: 29px 32px;
+}
+.digest-detail .section-heading > div {
+  min-width: 0;
+}
+.digest-detail h2 {
+  overflow-wrap: anywhere;
 }
 .digest-detail > .muted {
   font-size: 12px;
@@ -1449,6 +1460,108 @@ h2 {
   min-height: 0;
   overflow-y: auto;
   padding-right: 4px;
+}
+.account-info > .sync-status,
+.connection-row .sync-status {
+  color: #566b47;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+.sync-diagnostics {
+  margin-top: 0.5rem;
+  color: #787774;
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.sync-diagnostics summary {
+  cursor: pointer;
+}
+.digest-range-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  font-size: 0.875rem;
+}
+.digest-window-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.digest-account-picker {
+  position: relative;
+}
+.digest-account-picker summary,
+.digest-history-group summary,
+.legacy-digests summary,
+.digest-version-details summary {
+  cursor: pointer;
+  color: #686b65;
+}
+.digest-account-picker fieldset {
+  position: absolute;
+  z-index: 5;
+  display: grid;
+  gap: 0.75rem;
+  min-width: 220px;
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #eaeaea;
+  border-radius: 8px;
+}
+.digest-account-picker label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.digest-history-group details {
+  margin: 0.5rem 0 1rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.legacy-digests {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid #eaeaea;
+  font-size: 0.8125rem;
+}
+.digest-range {
+  margin-top: 1rem;
+  overflow-wrap: anywhere;
+}
+.digest-version-details {
+  margin: 0.5rem 0 1rem;
+  font-size: 0.8125rem;
+  color: #686b65;
+}
+.digest-history-group button,
+.legacy-digests button {
+  width: 100%;
+}
+@media (max-width: 640px) {
+  .digest-page-heading .page-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .digest-page-heading .heading-actions {
+    justify-content: flex-end;
+  }
+  .digest-history-group {
+    flex: 0 0 190px;
+  }
+  .digest-history .legacy-digests {
+    flex: 0 0 190px;
+    margin-top: 0;
+  }
+  .digest-range-toolbar {
+    gap: 0.75rem;
+  }
+  .digest-range-toolbar > .muted {
+    flex-basis: 100%;
+  }
+  .digest-account-picker fieldset {
+    max-width: calc(100vw - 3rem);
+  }
 }
 .inline-error {
   color: #836255 !important;

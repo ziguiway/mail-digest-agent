@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from threading import RLock
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 from sqlalchemy import select
-from agently import TriggerFlow
 from ..config import Settings
 from ..domain.errors import AppError
-from ..domain.models import Account, Digest, Mail, Message, Receipt
+from ..domain.models import Account, Message
 from ..domain.schemas import ModelView
 from ..infrastructure.database import Database, record
 from ..infrastructure.security import Secrets
@@ -16,7 +14,8 @@ from ..infrastructure.demo import DemoProvider, DemoIntelligence
 from ..infrastructure.maintenance import WorkspaceLease
 from ..agents.intelligence import AgentlyIntelligence
 from .accounts import Accounts
-from .mailboxes import Mailboxes, active_folder_scope
+from .mailboxes import Mailboxes
+from .digests import Digests
 from .tasks import Tasks
 from .questions import Questions
 from .feishu import Feishu
@@ -152,6 +151,7 @@ class Workspace:
             if settings.mode == "demo"
             else AgentlyIntelligence(self.db, self.secrets)
         )
+        self.digests = Digests(self)
 
     def model_view(self):
         model = self.db.get("model", {})
@@ -239,88 +239,7 @@ class Workspace:
         self.tasks.event(task_id, "stage", {"phase": title})
 
     async def generate_digest(self, task):
-        ids = (
-            task["payload"].get("account_ids")
-            or self.db.get("schedule", {}).get("account_ids")
-            or None
-        )
-        with self.db.session() as session:
-            checkpoint = session.get(Receipt, "digest-task:" + task["id"])
-            if checkpoint:
-                return {"digest_id": checkpoint.data["digest_id"]}
-        flow = TriggerFlow(name="mail-digest-" + task["id"])
-
-        async def collect(data):
-            coverage = await self.mailboxes.sync(
-                ids, lambda title: self.progress(task["id"], title)
-            )
-            if not coverage:
-                raise AppError("请先添加并启用邮箱", "no_accounts")
-            selected = self.mailboxes.selected(ids)
-            with self.db.session() as session:
-                mails = [
-                    record(m)
-                    for m in session.scalars(
-                        select(Mail)
-                        .where(
-                            active_folder_scope(selected),
-                            Mail.pending_digest.is_(True),
-                            Mail.observed_state == "current",
-                        )
-                        .order_by(Mail.sent_at)
-                        .limit(100)
-                    )
-                ]
-            if not mails and all(not c["ok"] for c in coverage):
-                raise AppError(
-                    "所有邮箱同步均未成功，请检查连接后重试", "all_accounts_failed", retryable=True
-                )
-            return {"mails": mails, "coverage": coverage}
-
-        async def analyze(data):
-            value = data.input
-            items = await self.intelligence.summarize(
-                value["mails"], lambda title: self.progress(task["id"], title)
-            )
-            return value | {"items": [i.model_dump() for i in items]}
-
-        async def persist(data):
-            await self.progress(task["id"], "正在保存摘要与邮件依据")
-            value = data.input
-            timezone_name = self.db.get("schedule", {}).get("timezone", "Asia/Shanghai")
-            with self.db.session() as session:
-                digest = Digest(
-                    title=datetime.now(ZoneInfo(timezone_name)).strftime("%m月%d日 · 邮件摘要"),
-                    items=value["items"],
-                    coverage=value["coverage"],
-                    status="partial"
-                    if any(
-                        not c["ok"] or c.get("coverage_state") != "complete"
-                        for c in value["coverage"]
-                    )
-                    else "generated",
-                )
-                session.add(digest)
-                session.flush()
-                for item in value["items"]:
-                    mail = session.get(Mail, item["mail_id"])
-                    mail.pending_digest, mail.priority = False, item["priority"]
-                session.add(Receipt(key="digest-task:" + task["id"], data={"digest_id": digest.id}))
-                return {"digest_id": digest.id}
-
-        flow.to(collect).to(analyze).to(persist)
-        execution = flow.create_execution()
-        try:
-            await execution.async_start({})
-        finally:
-            await execution.async_close()
-        with self.db.session() as session:
-            checkpoint = session.get(Receipt, "digest-task:" + task["id"])
-            if not checkpoint:
-                raise AppError(
-                    "摘要流程未完成，请查看执行阶段后重试", "flow_incomplete", retryable=True
-                )
-            return checkpoint.data
+        return await self.digests.generate(task)
 
     async def answer(self, task):
         conversation_id = task["payload"]["conversation_id"]
@@ -437,12 +356,20 @@ class Workspace:
             }
         if kind == "digest":
             result = await self.generate_digest(task)
-            if task["payload"].get("deliver") and self.feishu.state().get("enabled"):
+            if (
+                task["payload"].get("deliver")
+                and result.get("digest_id")
+                and not result.get("empty")
+                and not result.get("partial")
+                and self.feishu.state().get("enabled")
+            ):
                 context = task["payload"].get("feishu", {})
                 self.feishu.queue_digest(
                     result["digest_id"],
                     reply_to=context.get("message_id", ""),
                     binding_id=context.get("binding_id"),
+                    range_start=result.get("range_start"),
+                    range_end=result.get("range_end"),
                 )
             return result
         if kind == "query":

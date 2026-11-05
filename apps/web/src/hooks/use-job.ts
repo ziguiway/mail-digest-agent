@@ -24,7 +24,7 @@ export function useJob(scope?: string) {
         .then((task) => {
           if (active && restoredGeneration === generation.current) {
             setJob(task);
-            setError(task.error || '');
+            setError(['failed', 'cancelled'].includes(task.status) ? task.error || '' : '');
           }
         })
         .catch(() => {
@@ -55,10 +55,10 @@ export function useJob(scope?: string) {
         const next = await api<Task>(`/tasks/${job.id}`);
         if (activeGeneration !== generation.current) return;
         setJob((current) => (current?.id === next.id ? next : current));
+        setError(['failed', 'cancelled'].includes(next.status) ? next.error || '' : '');
         if (['failed', 'succeeded', 'cancelled'].includes(next.status)) {
           cache.invalidateQueries();
           stream.close();
-          if (next.error) setError(next.error);
         }
       } catch (e) {
         if (activeGeneration === generation.current) setError((e as Error).message);
@@ -90,6 +90,10 @@ export function useJob(scope?: string) {
         const result = await create();
         setJob(result);
         cache.invalidateQueries({ queryKey: ['tasks'] });
+        if (['failed', 'succeeded', 'cancelled'].includes(result.status)) {
+          cache.invalidateQueries();
+          setError(['failed', 'cancelled'].includes(result.status) ? result.error || '' : '');
+        }
         return result;
       } catch (e) {
         setError((e as Error).message);

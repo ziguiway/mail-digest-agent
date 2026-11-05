@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { ArrowRight, CheckCircle, CircleNotch, WarningCircle } from '@phosphor-icons/react';
 import { useQuery } from '@tanstack/react-query';
-import { api, type Mail } from '@/api/client';
+import { api, type Account, type Mail } from '@/api/client';
 import { cn, priorityText, statusText, time } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -37,6 +37,33 @@ export function Status({ value }: { value: string }) {
 }
 export function Priority({ value }: { value: string }) {
   return <span className={`priority ${value}`}>{priorityText[value] || value}</span>;
+}
+export function MailboxSyncStatus({
+  account,
+  diagnostics = false,
+}: {
+  account: Account;
+  diagnostics?: boolean;
+}) {
+  if (!account.enabled || account.status === 'removing') return null;
+  const notes = account.sync_diagnostics || [];
+  return (
+    <>
+      {account.sync_complete && account.last_sync_at && !account.error && (
+        <p className="sync-status">
+          {account.sync_method === 'uid_inventory' ? '已同步，使用兼容同步方式' : '已同步'}
+        </p>
+      )}
+      {diagnostics && notes.length > 0 && (
+        <details className="sync-diagnostics">
+          <summary>同步诊断</summary>
+          {notes.map((note) => (
+            <p key={note}>{note}</p>
+          ))}
+        </details>
+      )}
+    </>
+  );
 }
 export function ErrorNotice({ children }: { children?: ReactNode }) {
   return children ? (
@@ -125,15 +152,26 @@ export function CacheStatus({ state }: { state: Mail['observed_state'] }) {
   );
 }
 
-export function MailDialog({ id, onClose }: { id: string | null; onClose: () => void }) {
+export function MailDialog({
+  id,
+  onClose,
+  digestId,
+}: {
+  id: string | null;
+  onClose: () => void;
+  digestId?: string;
+}) {
   const [navigation, setNavigation] = useState<{ root: string | null; shown: string | null }>({
     root: null,
     shown: null,
   });
   const shown = navigation.root === id ? navigation.shown : id;
   const { data, error, isLoading } = useQuery({
-    queryKey: ['mail', shown],
-    queryFn: () => api<Mail>(`/mails/${shown}`),
+    queryKey: ['mail', shown, shown === id ? digestId : undefined],
+    queryFn: () =>
+      api<Mail>(
+        digestId && shown === id ? `/digests/${digestId}/sources/${shown}` : `/mails/${shown}`,
+      ),
     enabled: !!shown,
   });
   const thread = useQuery({
@@ -160,7 +198,11 @@ export function MailDialog({ id, onClose }: { id: string | null; onClose: () => 
       <DialogContent className="mail-dialog">
         <DialogHeader>
           <DialogTitle>{data?.subject || '邮件详情'}</DialogTitle>
-          <DialogDescription>只读查看邮件正文与来源。</DialogDescription>
+          <DialogDescription>
+            {digestId && shown === id
+              ? '查看此版本摘要生成时保存的邮件依据。'
+              : '只读查看邮件正文与来源。'}
+          </DialogDescription>
         </DialogHeader>
         {isLoading ? (
           <Loading />

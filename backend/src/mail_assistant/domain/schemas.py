@@ -76,6 +76,8 @@ class AccountView(BaseModel):
     revision: int
     last_sync_at: str | None
     sync_complete: bool
+    sync_method: Literal["uid_state", "uid_inventory"] | None = None
+    sync_diagnostics: list[str] = Field(default_factory=list)
     created_at: str
     removed_at: str | None = None
 
@@ -109,6 +111,13 @@ class ScheduleInput(BaseModel):
 
 class TaskInput(BaseModel):
     account_ids: list[str] = Field(default_factory=list)
+
+
+class DigestInput(TaskInput):
+    force_reanalyze: bool = False
+    request_id: str | None = Field(
+        default=None, min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$"
+    )
 
 
 class QuestionInput(BaseModel):
@@ -173,6 +182,18 @@ class DigestView(BaseModel):
     status: str
     delivery_status: str
     created_at: str
+    group_id: str | None = None
+    revision: int = 0
+    legacy: bool = True
+    range_start: str | None = None
+    range_end: str | None = None
+    timezone: str = "Asia/Shanghai"
+    source_count: int = 0
+    account_ids: list[str] = Field(default_factory=list)
+    checked_at: str | None = None
+    checked_start: str | None = None
+    checked_end: str | None = None
+    refresh_error: str | None = None
 
 
 class ConversationView(BaseModel):

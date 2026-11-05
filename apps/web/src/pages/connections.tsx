@@ -33,7 +33,14 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
-import { ErrorNotice, JobNotice, Loading, PageHeading, Status } from '@/components/shared';
+import {
+  ErrorNotice,
+  JobNotice,
+  Loading,
+  MailboxSyncStatus,
+  PageHeading,
+  Status,
+} from '@/components/shared';
 import { useJob } from '@/hooks/use-job';
 import { useDraft } from '@/hooks/use-draft';
 import { relative } from '@/lib/utils';
@@ -525,6 +532,7 @@ export function AccountsPanel() {
                 {account.host} · {account.folder} · {relative(account.last_sync_at)}
               </span>
               {account.error && <p className="inline-error">{account.error}</p>}
+              <MailboxSyncStatus account={account} diagnostics />
             </div>
             <div className="account-actions">
               <Status

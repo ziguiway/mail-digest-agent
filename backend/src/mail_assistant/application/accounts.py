@@ -13,15 +13,19 @@ class Accounts:
         self.db, self.manager, self.mode = db, manager, mode
         self.locks = {}
 
+    def view(self, account, coverage=None):
+        data = record(account)
+        if coverage and coverage.cursor.get("folder") == account.folder:
+            data["sync_method"] = coverage.cursor.get("sync_method")
+            data["sync_diagnostics"] = coverage.cursor.get("diagnostics", [])
+        return AccountView.model_validate(data).model_dump()
+
     def list(self, *, include_removed=False):
         with self.db.session() as session:
             statement = select(Account).order_by(Account.created_at)
             if not include_removed:
                 statement = statement.where(Account.removed_at.is_(None))
-            return [
-                AccountView.model_validate(record(a)).model_dump()
-                for a in session.scalars(statement)
-            ]
+            return [self.view(a, session.get(Coverage, a.id)) for a in session.scalars(statement)]
 
     def get(self, account_id, *, include_removed=False):
         with self.db.session() as session:

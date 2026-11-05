@@ -84,8 +84,32 @@ class Coverage(Base):
     warnings: Mapped[list] = mapped_column(JSON, default=list)
 
 
+class DigestGroup(Base):
+    __tablename__ = "digest_groups"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    day: Mapped[str] = mapped_column(String(10))
+    timezone: Mapped[str] = mapped_column(String(80))
+    scope: Mapped[list] = mapped_column(JSON)
+    latest_digest_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    active_task_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    checked_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    checked_start: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    checked_end: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class MailAnalysis(Base):
+    __tablename__ = "mail_analysis"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    mail_id: Mapped[str] = mapped_column(ForeignKey("mails.id"), index=True)
+    item: Mapped[dict] = mapped_column(JSON)
+    valid_until: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[str] = mapped_column(String(40), default=stamp)
+
+
 class Digest(Base):
     __tablename__ = "digests"
+    __table_args__ = (UniqueConstraint("group_id", "revision"),)
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=new_id)
     title: Mapped[str] = mapped_column(String(200))
     items: Mapped[list] = mapped_column(JSON, default=list)
@@ -93,6 +117,17 @@ class Digest(Base):
     status: Mapped[str] = mapped_column(String(30), default="generated")
     delivery_status: Mapped[str] = mapped_column(String(30), default="not_configured")
     created_at: Mapped[str] = mapped_column(String(40), default=stamp, index=True)
+    group_id: Mapped[str | None] = mapped_column(ForeignKey("digest_groups.id"), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    legacy: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    range_start: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    range_end: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    timezone: Mapped[str] = mapped_column(
+        String(80), default="Asia/Shanghai", server_default="Asia/Shanghai"
+    )
+    source_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sources: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
 
 
 class Conversation(Base):
