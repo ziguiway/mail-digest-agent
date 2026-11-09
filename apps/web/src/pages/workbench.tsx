@@ -582,6 +582,7 @@ export function TaskRows({ tasks }: { tasks: Task[] }) {
                 sync: '同步邮箱',
                 digest: '生成摘要',
                 query: '邮件查询',
+                reply_draft: '起草回复',
                 model_test: '验证模型',
                 account_test: '测试邮箱',
                 account_folders: '读取邮箱文件夹',

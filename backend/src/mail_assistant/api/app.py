@@ -18,7 +18,6 @@ from ..application.workspace import Workspace
 from ..config import Settings
 from ..domain.errors import AppError
 from ..domain.models import (
-    Account,
     Conversation,
     Digest,
     Mail,
@@ -43,6 +42,7 @@ from ..domain.schemas import (
     ModelInput,
     ModelView,
     QuestionInput,
+    ReplyDraftInput,
     ScheduleInput,
     TaskInput,
     TaskView,
@@ -316,12 +316,14 @@ def create_app(settings=None, *, embedded_worker=False):
 
     @app.get("/api/v1/mails/{mail_id}", response_model=MailView)
     def mail(mail_id: str, w=Depends(owner)):
-        with w.db.session() as session:
-            row = session.get(Mail, mail_id)
-            if not row:
-                raise AppError("邮件不存在", "mail_not_found", status=404)
-            account = session.get(Account, row.account_id)
-            return w.mailboxes.present(row, account.label, account.folder, account.enabled)
+        return w.mailboxes.cached_mail(mail_id)
+
+    @app.post("/api/v1/mails/{mail_id}/reply-drafts", response_model=TaskView, status_code=202)
+    def reply_draft(mail_id: str, form: ReplyDraftInput, w=Depends(owner)):
+        w.reply_source(mail_id, form.digest_id)
+        return w.tasks.enqueue(
+            "reply_draft", {"mail_id": mail_id, **form.model_dump()}, lane="interactive"
+        )
 
     @app.get("/api/v1/mails/{mail_id}/thread")
     def thread(mail_id: str, w=Depends(owner)):
@@ -345,18 +347,7 @@ def create_app(settings=None, *, embedded_worker=False):
 
     @app.get("/api/v1/digests/{digest_id}/sources/{mail_id}", response_model=MailView)
     def digest_source(digest_id: str, mail_id: str, w=Depends(owner)):
-        with w.db.session() as session:
-            digest = session.get(Digest, digest_id)
-            if not digest or not any(i["mail_id"] == mail_id for i in digest.items):
-                raise AppError("这封邮件不属于该摘要", "source_not_found", status=404)
-            source = next((m for m in digest.sources if m["id"] == mail_id), None)
-            if source:
-                return source
-            mail = session.get(Mail, mail_id)
-            if not mail:
-                raise AppError("找不到这封邮件", "source_not_found", status=404)
-            account = session.get(Account, mail.account_id)
-            return w.mailboxes.present(mail, account.label, account.folder, account.enabled)
+        return w.digests.source(digest_id, mail_id)
 
     @app.get("/api/v1/conversations", response_model=list[ConversationView])
     def conversations(w=Depends(owner)):

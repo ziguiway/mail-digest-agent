@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class BootstrapRequest(BaseModel):
@@ -127,6 +127,30 @@ class QuestionInput(BaseModel):
     request_id: str | None = Field(
         default=None, min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$"
     )
+
+
+class ReplyDraftInput(BaseModel):
+    intent: str = Field(min_length=1, max_length=2000)
+    digest_id: str | None = Field(default=None, min_length=1, max_length=40)
+
+    @field_validator("intent")
+    @classmethod
+    def nonblank_intent(cls, value):
+        if not value.strip():
+            raise ValueError("请填写想回复的要点")
+        return value.strip()
+
+
+class ReplyDraftWriting(BaseModel):
+    body: str = Field(default="", max_length=12000)
+    clarification: str = Field(default="", max_length=800)
+
+    @model_validator(mode="after")
+    def require_draft_or_question(self):
+        self.body, self.clarification = self.body.strip(), self.clarification.strip()
+        if bool(self.body) == bool(self.clarification):
+            raise ValueError("请返回草稿正文或一个待确认问题")
+        return self
 
 
 class TaskView(BaseModel):

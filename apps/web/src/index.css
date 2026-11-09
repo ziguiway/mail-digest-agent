@@ -891,6 +891,27 @@ h2 {
   color: #656b5b;
   font-size: 12px;
 }
+.reply-draft {
+  display: grid;
+  gap: 16px;
+}
+.reply-draft-field {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.reply-draft-field textarea {
+  resize: vertical;
+  line-height: 1.7;
+  font-weight: 400;
+}
+.reply-draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 .mail-body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

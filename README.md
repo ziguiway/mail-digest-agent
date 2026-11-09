@@ -1,82 +1,84 @@
-# 来信 · 多邮箱智能工作台
+# 来信 · Mail Digest Agent
 
-面向个人自托管的智能体课程项目：通过中文网页配置多个 QQ／网易邮箱，使用 Agently 分析邮件、生成三级优先级摘要并支持带来源的多轮查询；飞书提供可选的推送与对话入口。
+来信是一个可自托管的多邮箱智能工作台。把多个 QQ、网易邮箱接到一起，定时整理来信中的优先事项和截止时间，再用自然语言追问细节。需要时，可以让飞书机器人把摘要送到你的单聊。
 
-当前工程版已有网页、持久任务、邮件 MCP 适配器、飞书引导与投递、旧配置导入、离线备份恢复。本地样例与专项测试已通过；真实邮箱、模型、飞书和容器环境仍待验收。状态和交付门槛见[主计划 v2.2](docs/plans/engineering-upgrade-plan.md)，详细证据见[本地验证记录](docs/verification/2026-11-03-local-checks.md)。
+[核心功能](#核心功能) · [快速开始](#快速开始) · [飞书消息](#飞书消息) · [开发说明](docs/development.md)
 
-## 本地体验
+![来信智能查询页面，按处理建议列出邮件事项、下一步和可点击的原文依据](docs/screenshots/query-table-desktop.png)
 
-需要 Python 3.11、uv、Node.js 22、pnpm 11.25.0。仓库根目录执行：
+*智能查询的样例界面。截图中的邮件和回答均为演示数据。*
 
-```bash
-uv sync --all-packages --group dev --frozen
-cd apps/web
-pnpm install --frozen-lockfile
-pnpm build
-cd ../..
-.venv/bin/python -m mail_assistant demo
+## 核心功能
+
+| 功能 | 你可以做什么 |
+| --- | --- |
+| **多邮箱汇总** | 在同一个工作台配置多个 QQ、网易邮箱，选择要同步的文件夹，按来源筛选来信。 |
+| **最近 24 小时摘要** | 手动刷新或设置定时汇总。摘要按优先处理、需要关注、信息通知分类，列出下一步、明确的截止时间和邮件依据。内容没变时复用已有版本。 |
+| **带依据的多轮查询** | 问“今天有什么需要我处理？”或追问“那场会议后来改到几点？”。回答关联实际读取的邮件，可以点开原文和相关往来核对。 |
+| **起草邮件回复** | 从摘要事项或邮件详情进入，输入想回复的要点。助手结合原邮件与关联往来起草回复，主题和正文可以编辑后复制。 |
+| **飞书推送与对话** | 将摘要发到配对单聊，也可以直接向机器人提问。机器人先发接收提示，完成后回复结果，最终失败时说明原因。 |
+
+### 摘要界面
+
+从摘要里先看需要处理的事项，再点开邮件核对期限和判断依据。页面保留统计范围和历史版本，也会提示同步覆盖不足。
+
+![来信摘要页面，展示最近24小时的汇总范围、优先级、行动建议和原文入口](docs/screenshots/digest-refresh-desktop.png)
+
+*最近 24 小时摘要的样例界面。*
+
+## 快速开始
+
+### 从源码体验
+
+安装 Docker、Compose 和 Buildx，克隆仓库并启动演示工作台。
+
+```sh
+git clone https://github.com/ziguiway/mail-digest-agent.git
+cd mail-digest-agent
+MAIL_ASSISTANT_MODE=demo MAIL_ASSISTANT_HTTP_PORT=8766 sh deploy/up.sh -p mail-digest-demo
 ```
 
-打开 `http://127.0.0.1:8765`，点击“进入演示工作台”。样例模式运行实际数据库、任务、Worker、TriggerFlow 和网页；邮箱与模型使用明确标识的模拟数据，不访问真实服务。可以生成摘要、打开邮件来源，再问“找导师的会议通知”和“后来有更新吗”。
+打开 [127.0.0.1:8766](http://127.0.0.1:8766/)，点击「进入演示工作台」。可以用样例邮箱体验摘要、原文查看、多轮查询和起草回复。
 
-## 配置真实服务
+从源码启动真实工作台时执行 `sh deploy/up.sh`。脚本等待网页和后台通过健康检查，并打印访问地址与首次初始化凭证。[部署与网络排查](docs/deployment.md)
 
-```bash
-.venv/bin/python -m mail_assistant run
+### 使用预构建镜像
+
+已有镜像归档时，选用 AMD64 或 ARM64 版本，导入后用 Docker 启动。下面以 AMD64 为例，在归档所在目录执行。[镜像部署说明](docs/deployment.md#直接运行预构建镜像)
+
+```sh
+docker load -i mail-digest-agent-0.2.0-linux-amd64.tar.gz && docker run --pull=never -d --name mail-digest-agent --restart unless-stopped --stop-timeout 45 -p 127.0.0.1:8765:8765 -v mail-digest-agent-data:/var/lib/mail-assistant mail-digest-agent:0.2.0
 ```
 
-在另一个终端读取首次初始化凭证：
+打开 [127.0.0.1:8765](http://127.0.0.1:8765/)。首次进入时，用下面的命令读取一次性凭证，在网页设置管理密码。
 
-```bash
-.venv/bin/python -m mail_assistant bootstrap-token
+```sh
+docker exec mail-digest-agent mail-assistant bootstrap-token
 ```
 
-在网页设置管理密码，然后按向导配置模型、邮箱、摘要计划和可选飞书。模型须支持结构化输出与工具调用；邮箱填写开启 IMAP 后取得的客户端授权码。飞书按网页完成授权、权限／事件发布、本人配对和机器人测试。
+### 接入自己的邮箱
 
-初次缓存默认回溯 30 天，首次摘要覆盖最近 24 小时；默认每日 09:00、Asia/Shanghai，每 5 分钟后台同步。摘要和同步有独立开关，以网页保存的配置为准。关闭网页不停止后台任务；运行设备和 API／Worker 需保持在线。
+1. 在网页配置支持工具调用和结构化输出的 OpenAI 兼容模型，并测试连接。
+2. 添加 QQ 或网易邮箱，填写客户端授权码，选择需要同步的文件夹。
+3. 按需设置每日汇总的时间、时区和邮箱范围。后台运行时，关闭网页后任务也会继续执行。
 
-## 功能与工程结构
+## 飞书消息
 
-网页包含概览、邮件、摘要、智能查询、连接与设置、任务记录六个入口。摘要保存事项、行动、截止时间、优先级和邮件依据；查询通过搜索、读正文、查往来三个应用级 Actions 取得依据。未知时间、部分同步和截断会明确显示。摘要生成与投递分别记录；重试沿用已保存摘要和分段回执，结果不确定时提供核对后的明确重试。
+在「连接与设置 → 飞书连接」完成应用授权和单聊配对后，就可以发送 `/digest` 请求当前摘要，或者直接提问。简洁通知保留重点事项、下一步和来源，普通通知合并展示。下面是样例摘要的一段通知。
 
-邮箱支持发现并选择文件夹，邮件区分最近观察到、历史缓存与尚未确认，详情可跳转相关往来。停用和移除连接分别操作，移除仍保留旧摘要依据。具体规则见[邮箱行为说明](docs/mailboxes.md)。
-
-| 目录 | 职责 |
-|---|---|
-| `apps/web/` | React／TypeScript／Vite 中文工作台与浏览器检查 |
-| `backend/src/mail_assistant/api/` | FastAPI、登录、配置与任务进度接口 |
-| `backend/src/mail_assistant/application/` | 账号、同步、查询、摘要、飞书与导入服务 |
-| `backend/src/mail_assistant/agents/` | Agently 调用、工具及提示词 |
-| `backend/src/mail_assistant/infrastructure/` | MCP／CLI、SQLite、凭据与维护适配 |
-| `backend/src/mail_assistant/migrations/` | Alembic 数据库迁移 |
-| `deploy/`、`compose.yaml` | API／Worker 部署及健康检查 |
-| `mail_agent/` | 保留的 CLI 原型与诊断参考 |
-
-邮箱接入优先复用锁定版本的邮件 MCP，由 IMAP 连接邮箱；应用负责统一配置、跨账号聚合、业务缓存与调度。选型依据和兼容性限制见[邮件 MCP 调研](docs/research/email-mcp-survey.md)。本期为单用户只读使用，不包含自动回复／删除邮件、附件分析、个性化规则或安全研究专题。
-
-## 部署与维护
-
-Compose 使用相同镜像启动 API、Worker，共享持久卷，API 同源提供前端。默认只绑定本机 `127.0.0.1:8765`。已在 Linux arm64 容器完成构建、启动、导入、新卷恢复和本地 CA HTTPS 检查，见[部署验证记录](docs/verification/2026-11-04-deployment.md)；真实服务和公网部署仍待验收。
-
-| 文档 | 内容 |
-|---|---|
-| [开发说明](docs/development.md) | 安装、开发、配置项与检查命令 |
-| [部署说明](docs/deployment.md) | Compose、初始化、状态与停止 |
-| [HTTPS 部署](docs/https.md) | 域名、Caddy、会话与任务事件 |
-| [维护说明](docs/maintenance.md) | 旧 TOML／.env 导入、一致性备份、新目录恢复及升级回退 |
-| [飞书指南](docs/feishu.md) | 应用授权、配对、测试与投递恢复 |
-| [CLI 原型说明](docs/legacy-cli.md) | 原 `python3 -m mail_agent` 使用方法 |
-| [课程演示](docs/demo.md) | 网页演示顺序、真实联调数据及交付清单 |
-
-导入、备份和恢复前停止 API／Worker；维护锁会拒绝使用中的目录。恢复保留账号来源、应用密钥、任务和回执，并重建 MCP 目录引用。系统钥匙串等外部凭据的恢复限制会列入报告。
-
-## 验证
-
-```bash
-.venv/bin/python -m pytest -c backend/pyproject.toml backend/tests -q
-.venv/bin/ruff check --config backend/pyproject.toml backend deploy
-.venv/bin/ruff format --config backend/pyproject.toml --check backend deploy
-python3 -m unittest discover -s tests -v
+```text
+【需要关注】课题组会议时间更新
+下一步：确认参会，准备本周研究进展。
+来源：课题组与实验室 · 课题组导师
 ```
 
-前端构建和 Playwright 命令见开发说明。测试覆盖业务及适配契约，飞书使用可执行 CLI 替身，模型和邮箱内容使用隔离样例。真实服务联调、容器新卷恢复和连续运行记录单独验收。
+启用每日汇总与飞书收发后，机器人也会按计划推送摘要。网页里的任务记录可查看生成与投递状态，并重试失败的投递。[飞书配置指南](docs/feishu.md)
+
+## 技术与文档
+
+网页由 React、TypeScript 和 Vite 构建，服务端使用 FastAPI 和 SQLite。邮件通过 IMAP 与邮件 MCP 同步，Agently 负责邮件检索和结构化分析。网页与飞书共用查询和摘要服务，Worker 负责调度和投递。
+
+- [开发与测试](docs/development.md)
+- [邮箱同步与缓存行为](docs/mailboxes.md)
+- [Docker 和 HTTPS 部署](docs/deployment.md)
+- [备份、恢复与旧配置导入](docs/maintenance.md)

@@ -315,6 +315,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/mails/{mail_id}/reply-drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reply Draft */
+        post: operations["reply_draft_api_v1_mails__mail_id__reply_drafts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/mails/{mail_id}/thread": {
         parameters: {
             query?: never;
@@ -1166,6 +1183,13 @@ export interface components {
             /** Request Id */
             request_id?: string | null;
         };
+        /** ReplyDraftInput */
+        ReplyDraftInput: {
+            /** Intent */
+            intent: string;
+            /** Digest Id */
+            digest_id?: string | null;
+        };
         /** ScheduleInput */
         ScheduleInput: {
             /**
@@ -1895,6 +1919,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MailView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reply_draft_api_v1_mails__mail_id__reply_drafts_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mail_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplyDraftInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskView"];
                 };
             };
             /** @description Validation Error */

@@ -23,6 +23,7 @@ class Worker:
     async def tick(self):
         w = self.workspace
         w.db.set("worker", {"heartbeat_at": stamp(), "status": "running", "mode": w.settings.mode})
+        w.feishu.reconcile_notifications()
         config = ScheduleInput(**w.db.get("schedule", {}))
         now = datetime.now(ZoneInfo(config.timezone))
         active_ids = [
@@ -64,6 +65,10 @@ class Worker:
                 except Exception as exc:
                     LOG.warning("Task %s failed: %s", task["id"], type(exc).__name__)
                     self.workspace.tasks.fail(task["id"], exc)
+                    try:
+                        self.workspace.feishu.reconcile_notifications()
+                    except Exception:
+                        LOG.warning("Feishu task feedback deferred until the next scheduler tick")
             else:
                 try:
                     await asyncio.wait_for(self.stop.wait(), 0.5)

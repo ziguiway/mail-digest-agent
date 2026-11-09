@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+from unittest.mock import AsyncMock
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,9 +14,18 @@ from mail_assistant.api.app import create_app
 from mail_assistant.application.workspace import Workspace
 from mail_assistant.config import Settings
 from mail_assistant.domain.errors import AppError
-from mail_assistant.domain.models import Conversation, Delivery, Digest, Message, Task
+from mail_assistant.domain.models import (
+    Account,
+    Conversation,
+    Delivery,
+    Digest,
+    Mail,
+    Message,
+    Task,
+)
 from mail_assistant.domain.schemas import FeishuBindInput
 from mail_assistant.infrastructure.lark_cli import LarkCli, authorization_urls, json_documents
+from mail_assistant.worker import Worker
 
 
 def make_stub(tmp_path):
@@ -208,9 +218,11 @@ async def test_stream_pairing_query_dedup_multiturn_and_reply_sources(workspace)
         await wait_for(lambda: has_query(w))
         await execute(w, "interactive")
         await execute(w, "delivery")
+        await execute(w, "delivery")
         emit(w, event("那封邮件后来有更新吗？", "om_followup"))
         await wait_for(lambda: has_query(w))
         await execute(w, "interactive")
+        await execute(w, "delivery")
         await execute(w, "delivery")
         with w.db.session() as session:
             conversations = session.scalars(
@@ -412,3 +424,236 @@ def test_feishu_api_requires_login_and_pairing_before_enabling(tmp_path):
         )
         assert response.status_code == 202 and "test-only-secret" not in response.text
         assert client.post("/api/v1/settings/feishu/disconnect").json()["status"] == "disconnected"
+
+
+async def test_concise_query_reply_keeps_queued_text_on_retry_and_uses_post(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    with w.db.session() as session:
+        conversation = Conversation(title="简洁通知测试", channel="feishu")
+        session.add(conversation)
+        session.flush()
+        message = Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content="网页上的完整文字回答保持不变",
+            sources=[
+                {
+                    "id": "internal-source",
+                    "account_label": "学习",
+                    "subject": "原始主题",
+                    "sender": "导师",
+                }
+            ],
+            presentation={
+                "version": 1,
+                "type": "mail_table",
+                "summary": "有一项需要确认。",
+                "rows": [
+                    {"mail_id": "internal-source", "handling": "confirm", "action": "核对时间。"}
+                ],
+                "notes": [],
+            },
+        )
+        session.add(message)
+        session.flush()
+        message_id = message.id
+    context = {"message_id": "om_question", "binding_id": w.feishu.state()["binding_id"]}
+    task = w.feishu.queue_answer(message_id, context)
+    with w.db.session() as session:
+        delivery = session.get(Delivery, task["payload"]["delivery_id"])
+        original = delivery.text
+        assert "【待确认】原始主题\n下一步：核对时间。" in original
+        assert "来源：学习 · 导师" in original and "internal-source" not in original
+        assert session.get(Message, message_id).content == "网页上的完整文字回答保持不变"
+    controls(w, send_fail_at=1)
+    with pytest.raises(AppError):
+        await execute(w, "delivery")
+    with w.db.session() as session:
+        message = session.get(Message, message_id)
+        message.content, message.presentation = "后来的修改", None
+    assert w.feishu.queue_answer(message_id, context)["id"] == task["id"]
+    controls(w)
+    w.feishu.retry_delivery(task["payload"]["delivery_id"])
+    await execute(w, "delivery")
+    entries = [
+        json.loads(line)
+        for line in (w.settings.feishu_dir / "fake-log.ndjson").read_text().splitlines()
+    ]
+    sent = [row for row in entries if "send_number" in row]
+    assert len(sent) == 2 and sent[0]["content"] == sent[1]["content"]
+    assert sent[-1]["content"] == {"zh_cn": {"content": [[{"tag": "text", "text": original}]]}}
+    send_args = [
+        row["args"] for row in entries if row.get("args", [])[:2] == ["im", "+messages-reply"]
+    ]
+    assert all(args[args.index("--msg-type") + 1] == "post" for args in send_args)
+    assert all(args[args.index("--message-id") + 1] == "om_question" for args in send_args)
+    assert (
+        send_args[0][send_args[0].index("--idempotency-key") + 1]
+        == send_args[1][send_args[1].index("--idempotency-key") + 1]
+    )
+
+
+async def test_digest_notification_uses_saved_sources_after_mailbox_changes(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    result = await execute(w, "background")
+    with w.db.session() as session:
+        digest = session.get(Digest, result["digest_id"])
+        old_labels = {source["account_label"] for source in digest.sources}
+        for account in session.scalars(select(Account)):
+            account.label = "后来改名的邮箱"
+        for mail in session.scalars(select(Mail)):
+            mail.sender = "后来修改的发件人"
+    task = w.feishu.queue_digest(result["digest_id"])
+    with w.db.session() as session:
+        delivery = session.get(Delivery, task["payload"]["delivery_id"])
+        assert all(label in delivery.text for label in old_labels)
+        assert "后来改名" not in delivery.text and "后来修改" not in delivery.text
+        assert "范围：" in delivery.text and "版本 1" in delivery.text
+        assert "截止：" in delivery.text
+        assert all(item["mail_id"] not in delivery.text for item in digest.items)
+        original = delivery.text
+    await execute(w, "delivery")
+    assert w.feishu.queue_digest(result["digest_id"])["id"] == task["id"]
+    with w.db.session() as session:
+        assert session.get(Delivery, task["payload"]["delivery_id"]).text == original
+
+
+async def test_query_ack_is_sent_before_model_execution_and_deduplicates(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    incoming = event("今天有什么需要处理？", "om_ack")
+    w.feishu.receive(incoming)
+    w.feishu.receive(incoming)
+    await execute(w, "delivery")
+    with w.db.session() as session:
+        queries = session.scalars(select(Task).where(Task.kind == "query")).all()
+        assert len(queries) == 1 and queries[0].status == "queued"
+        acknowledgements = session.scalars(
+            select(Delivery).where(Delivery.kind == "request_ack")
+        ).all()
+        assert len(acknowledgements) == 1 and acknowledgements[0].status == "sent"
+        assert acknowledgements[0].reply_to == "om_ack"
+        assert "已收到，正在检索相关邮件并生成回答" in acknowledgements[0].text
+    assert int((w.settings.feishu_dir / "fake-send-count").read_text()) == 1
+
+
+async def test_terminal_failure_replies_once_and_temporary_retry_does_not(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.receive(event("查询邮件", "om_failure"))
+    claimed = w.tasks.claim("interactive")
+    w.tasks.fail(
+        claimed["id"], AppError("模型服务响应超时，请稍后重试", "model_timeout", retryable=True)
+    )
+    w.feishu.reconcile_notifications()
+    assert not [d for d in w.feishu.deliveries() if d["kind"] == "request_error"]
+    with w.db.session() as session:
+        task = session.get(Task, claimed["id"])
+        task.available_at = task.created_at
+        task.max_attempts = 2
+    claimed = w.tasks.claim("interactive")
+    w.tasks.fail(
+        claimed["id"], AppError("模型服务响应超时，请稍后重试", "model_timeout", retryable=True)
+    )
+    w.feishu.reconcile_notifications()
+    w.feishu.reconcile_notifications()
+    with w.db.session() as session:
+        failures = session.scalars(select(Delivery).where(Delivery.kind == "request_error")).all()
+        assert len(failures) == 1 and failures[0].reply_to == "om_failure"
+        assert "邮件查询未完成：模型服务响应超时" in failures[0].text
+    await execute(w, "delivery")
+    await execute(w, "delivery")
+    assert int((w.settings.feishu_dir / "fake-send-count").read_text()) == 2
+
+
+async def test_reconciliation_recovers_missing_ack_and_does_not_backfill_old_tasks(
+    workspace, monkeypatch
+):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    original = w.feishu.queue_request_ack
+    monkeypatch.setattr(w.feishu, "queue_request_ack", lambda task: None)
+    w.feishu.receive(event("恢复后查询", "om_recovery"))
+    monkeypatch.setattr(w.feishu, "queue_request_ack", original)
+    assert not w.feishu.deliveries()
+    w.tasks.enqueue(
+        "query",
+        {"feishu": {"binding_id": w.feishu.state()["binding_id"], "message_id": "om_old"}},
+        lane="interactive",
+    )
+    w.feishu.reconcile_notifications()
+    w.feishu.reconcile_notifications()
+    with w.db.session() as session:
+        rows = session.scalars(select(Delivery)).all()
+        assert len(rows) == 1 and rows[0].reply_to == "om_recovery"
+
+
+async def test_reconciliation_never_redirects_old_binding_feedback(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.receive(event("旧绑定的问题", "om_old_binding"))
+    task = w.tasks.claim("interactive")
+    w.tasks.fail(task["id"], AppError("失败", "test_failure"))
+    w.feishu.pair()
+    w.feishu.receive(event(w.feishu.view()["pairing_code"], sender_id="ou_new", chat_id="oc_new"))
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.reconcile_notifications()
+    assert not [d for d in w.feishu.deliveries() if d["kind"] == "request_error"]
+
+
+async def test_worker_reports_terminal_model_failure_to_feishu(workspace, monkeypatch):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.receive(event("模型失败也请回复", "om_worker_failure"))
+    monkeypatch.setattr(
+        w.intelligence,
+        "answer",
+        AsyncMock(side_effect=AppError("模型返回结构错误", "model_output_error")),
+    )
+    worker = Worker(w)
+    running = asyncio.create_task(worker.lane("interactive"))
+    try:
+        await wait_for(lambda: any(d["kind"] == "request_error" for d in w.feishu.deliveries()))
+    finally:
+        worker.stop.set()
+        await running
+    await execute(w, "delivery")
+    await execute(w, "delivery")
+    with w.db.session() as session:
+        reply = session.scalar(select(Delivery).where(Delivery.kind == "request_error"))
+        assert reply.status == "sent" and reply.reply_to == "om_worker_failure"
+
+
+@pytest.mark.parametrize("partial", [False, True])
+async def test_digest_ack_has_a_final_reply_for_empty_or_partial_results(
+    workspace, monkeypatch, partial
+):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.receive(event("/digest", "om_empty_digest"))
+    monkeypatch.setattr(
+        w, "generate_digest", AsyncMock(return_value={"empty": not partial, "partial": partial})
+    )
+    with w.db.session() as session:
+        task = session.scalar(
+            select(Task).where(
+                Task.kind == "digest", Task.payload["feishu"]["notify"].as_boolean().is_(True)
+            )
+        )
+        task = {column.name: getattr(task, column.name) for column in task.__table__.columns}
+    await w.execute(task)
+    await w.execute(task)
+    with w.db.session() as session:
+        messages = session.scalars(select(Delivery).where(Delivery.kind == "digest_status")).all()
+        assert len(messages) == 1 and messages[0].reply_to == "om_empty_digest"
+        assert ("暂时无法给出完整摘要" if partial else "没有符合条件的邮件") in messages[0].text

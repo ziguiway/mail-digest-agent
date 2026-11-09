@@ -6,7 +6,7 @@ from sqlalchemy import select
 from ..config import Settings
 from ..domain.errors import AppError
 from ..domain.models import Account, Message
-from ..domain.schemas import ModelView
+from ..domain.schemas import ModelView, ReplyDraftWriting
 from ..domain.query_answers import present_query_answer, validate_query_answer
 from ..infrastructure.database import Database, record
 from ..infrastructure.security import Secrets
@@ -26,6 +26,7 @@ class QueryTools:
     def __init__(self, workspace, account_ids, task_id):
         self.workspace, self.account_ids, self.task_id = workspace, account_ids, task_id
         self.evidence, self.calls = {}, []
+        self.searches = []
 
     async def stage(self, name, title):
         self.calls.append(name)
@@ -72,6 +73,19 @@ class QueryTools:
             }
             for m in result["mails"]
         ]
+        self.searches.append(
+            {
+                "keywords": keywords,
+                "sender": sender,
+                "since": since,
+                "before": before,
+                "account_id": account_id,
+                "limit": limit,
+                "offset": offset,
+                "cache_state": cache_state,
+                **{key: value for key, value in result.items() if key != "mails"},
+            }
+        )
         return result
 
     async def read_mails(self, mail_ids: list[str]) -> dict:
@@ -240,6 +254,59 @@ class Workspace:
     async def generate_digest(self, task):
         return await self.digests.generate(task)
 
+    def reply_source(self, mail_id, digest_id=None):
+        if digest_id:
+            return self.digests.source(digest_id, mail_id)
+        return self.mailboxes.cached_mail(mail_id)
+
+    async def draft_reply(self, task):
+        payload = task["payload"]
+        source = self.reply_source(payload["mail_id"], payload.get("digest_id"))
+        await self.progress(task["id"], "正在核对原邮件与相关往来")
+        warnings = []
+        try:
+            thread = self.mailboxes.thread(
+                source["id"], [source["account_id"]], include_inactive=True
+            )
+        except AppError as exc:
+            if exc.code != "mail_not_found":
+                raise
+            thread = {"linked": []}
+            warnings.append("相关往来已不可用，本次依据摘要保存的原邮件起草。")
+        related = [mail for mail in thread["linked"] if mail["id"] != source["id"]]
+        if len(related) > 6:
+            warnings.append("相关往来较多，本次参考最近的关联邮件。")
+        related = related[-6:]
+
+        def context(mail, limit):
+            body = mail["body"]
+            return {
+                **{key: mail.get(key) for key in ("subject", "sender", "sent_at", "received_at")},
+                "body": body[:limit],
+                "body_truncated": mail["body_truncated"] or len(body) > limit,
+            }
+
+        original = context(source, 12000)
+        linked = [context(mail, 4000) for mail in related]
+        if any(mail["body_truncated"] for mail in [original, *linked]):
+            warnings.append("部分邮件仅有正文片段，请核对原文中的细节。")
+        if source.get("observed_state", "unknown") != "current":
+            warnings.append("原邮件来自历史或尚未确认的缓存，请核对是否已有更新。")
+        await self.progress(task["id"], "正在起草回复")
+        writing = ReplyDraftWriting.model_validate(
+            await self.intelligence.draft_reply(payload["intent"], original, linked)
+        )
+        subject = " ".join(source["subject"].split()) or "（无主题）"
+        if not subject.lower().startswith(("re:", "re：", "回复:", "回复：", "答复:", "答复：")):
+            subject = "Re: " + subject
+        return {
+            "subject": subject,
+            "body": writing.body,
+            "clarification": writing.clarification,
+            "related_count": len(related),
+            "warnings": warnings,
+        }
+
     async def answer(self, task):
         conversation_id = task["payload"]["conversation_id"]
         with self.db.session() as session:
@@ -268,7 +335,12 @@ class Workspace:
         if stale:
             await self.mailboxes.sync(stale, lambda title: self.progress(task["id"], title))
         tools = QueryTools(self, ids, task["id"])
-        answer = await self.intelligence.answer(task["payload"]["question"], history, tools)
+        answer = await self.intelligence.answer(
+            task["payload"]["question"],
+            history,
+            tools,
+            lambda title: self.progress(task["id"], title),
+        )
         answer = validate_query_answer(answer, tools.evidence)
         sources = [tools.evidence[i] for i in answer["mail_ids"] if i in tools.evidence]
         coverage = tools.coverage()
@@ -359,6 +431,20 @@ class Workspace:
             }
         if kind == "digest":
             result = await self.generate_digest(task)
+            context = task["payload"].get("feishu", {})
+            if context.get("notify") and (result.get("empty") or result.get("partial")):
+                text = (
+                    "本次同步范围尚未确认，暂时无法给出完整摘要；请检查邮箱连接后重试。"
+                    if result.get("partial")
+                    else "已检查本次汇总范围，没有符合条件的邮件。"
+                )
+                self.feishu.queue_delivery(
+                    "digest_status",
+                    task["id"],
+                    text,
+                    reply_to=context["message_id"],
+                    binding_id=context["binding_id"],
+                )
             if (
                 task["payload"].get("deliver")
                 and result.get("digest_id")
@@ -380,6 +466,8 @@ class Workspace:
             if context := task["payload"].get("feishu"):
                 self.feishu.queue_answer(result["message_id"], context)
             return result
+        if kind == "reply_draft":
+            return await self.draft_reply(task)
         if kind == "feishu_authorize":
             return await self.feishu.authorize(task)
         if kind == "feishu_send":

@@ -1,27 +1,38 @@
 # 自托管部署
 
-已在 Colima 的 Linux arm64 环境完成实际镜像构建、API／Worker 启动、配置导入、新卷恢复、重启及本地 CA HTTPS 验证，见[部署验证记录](verification/2026-11-04-deployment.md)。一个网易 163 测试账号已通过真实登录与收信，缺少 UIDNEXT 时已通过[清单核对兼容同步验收](verification/2026-11-04-uid-inventory-sync.md)。一个 OpenRouter 模型已通过真实结构化输出和测试工具调用，见[模型联调记录](verification/2026-11-04-model-connection.md)。其他邮箱、邮件模型业务效果、飞书、公网证书、持续运行和远端 CI 仍待分别验收。
+## 直接运行预构建镜像
 
-## Compose 入口
+安装并启动 Docker，Docker Desktop 选择 Linux 容器模式。x86-64 主机使用 `linux-amd64` 镜像包，Apple Silicon 和 ARM64 主机使用 `linux-arm64` 镜像包。以 AMD64 为例，从镜像包所在目录导入并启动：
 
-在安装 Docker Engine／Desktop 和 Compose v2 的机器，仓库根目录执行：
-
-```bash
-docker compose config --quiet
-docker compose build
-docker compose up --wait --wait-timeout 120
-docker compose ps
+```sh
+docker load -i mail-digest-agent-0.2.0-linux-amd64.tar.gz && docker run --pull=never -d --name mail-digest-agent --restart unless-stopped --stop-timeout 45 -p 127.0.0.1:8765:8765 --mount type=volume,source=mail-digest-agent-data,target=/var/lib/mail-assistant mail-digest-agent:0.2.0
 ```
 
-浏览器打开 `http://127.0.0.1:8765`。API 与 Worker 使用同一镜像，以 UID 10001 运行，共享 `workspace` 持久卷；API 提供网页和接口，Worker 执行调度、任务与邮件 MCP。镜像包含 Python 后端、编译后的前端、邮件 MCP、Node 与固定版本的飞书 CLI。
+两个架构的归档均导入为 `mail-digest-agent:0.2.0`。镜像默认同时运行 API 和 Worker，容器健康检查覆盖网页接口和后台心跳。命名卷由 Docker 创建，用于保存配置和业务数据。[Docker 镜像导入](https://docs.docker.com/reference/cli/docker/image/load/)
 
-首次初始化：
+打开 `http://127.0.0.1:8765`。首次进入时读取一次性凭证，在网页设置管理密码，然后配置邮箱、模型和可选飞书。
 
-```bash
-docker compose exec api mail-assistant bootstrap-token
+```sh
+docker exec mail-digest-agent mail-assistant bootstrap-token
 ```
 
-将输出的一次性凭证填写到网页，设置管理密码，然后完成模型和邮箱配置。管理凭证只在该显式命令输出；普通日志只显示凭证文件位置。
+可用 `docker restart mail-digest-agent` 重启。网络诊断使用 `docker exec mail-digest-agent python /app/deploy/check_network.py`。容器需要指定解析服务器时，在镜像名之前添加 `--dns` 参数和可达的 DNS 地址。
+
+## 从源码一行部署
+
+准备已启动的 Docker Engine 或 Docker Desktop（Linux 容器模式），以及支持 `up --wait` 的 Compose 插件和 Buildx。首次构建需要 Docker 能访问镜像仓库、Debian、npm、PyPI 和飞书 CLI 的下载源。在仓库根目录执行：
+
+```sh
+sh deploy/up.sh
+```
+
+构建完成后，脚本等待 API 和 Worker 通过健康检查，输出工作台地址和首次初始化凭证。浏览器打开默认地址 `http://127.0.0.1:8765`，在网页填写凭证并设置管理密码，随后配置邮箱、模型和可选飞书。已初始化的工作台会提示直接登录。Windows 可在 WSL 或 Git Bash 中使用同一命令。
+
+API 与 Worker 复用同一次构建的镜像。API 先初始化工作空间，健康检查通过后 Worker 开始运行。两者均以 UID 10001 运行，使用 Docker 创建的 `workspace` 命名卷。镜像包含 Python、已构建的前端、邮件 MCP、Node 和飞书 CLI。
+
+如 8765 已被占用，可指定其他空闲端口，例如 `MAIL_ASSISTANT_HTTP_PORT=8766 sh deploy/up.sh`。首次凭证也可通过 `docker compose exec -T api mail-assistant bootstrap-token` 显式读取。
+
+源码部署从本地项目构建。已有镜像的部署可指定 `MAIL_ASSISTANT_IMAGE`，用 `docker compose up --no-build --wait` 启动。
 
 ## 状态与停止
 
@@ -42,19 +53,39 @@ HTTPS 使用附加的 `compose.https.yaml`，配置见[HTTPS 部署](https.md)�
 
 `MAIL_ASSISTANT_HTTP_PORT` 可调整本机 HTTP 端口，`MAIL_ASSISTANT_IMAGE` 可选择固定镜像标签／摘要。独立样例部署可设置 `MAIL_ASSISTANT_MODE=demo`，此时 API 和 Worker 仍分别运行；使用独立项目名和卷，不与真实数据共用。
 
-## 容器无法解析邮箱域名
+## 检查容器外网
 
-API／Worker 健康不代表可以访问外部邮箱。若容器内 `socket.getaddrinfo("imap.163.com", 993)` 报 `Temporary failure in name resolution`，先检查 Docker 主机或 Colima 的 DNS。2026-11-04 本地联调曾遇到 Colima `/etc/resolv.conf` 指向不存在的文件，导致容器没有上游 DNS；授权码和 TLS 证书均正常。
+容器健康检查覆盖网页和 Worker 心跳。以下命令从 Worker 直接连接网易、QQ 的 IMAP 993 端口，以及 OpenRouter、飞书的 HTTPS 443 端口。检查分为 DNS、TCP 和 TLS 三步，使用系统信任的证书，不需要服务凭据。
 
-可使用项目内的可选覆盖文件，为 API 和 Worker 指定当前网络提供、且能从容器访问的 DNS 服务器。将地址写入自己的部署环境文件，例如 `MAIL_ASSISTANT_DNS=你的网络DNS地址`，然后在原部署命令中追加 `-f compose.dns.yaml`：
-
-```bash
-docker compose --env-file runtime/deployment/live.env \
-  -f compose.yaml -f compose.dns.yaml -p mail-assistant-local-live \
-  up -d --wait --wait-timeout 100
+```sh
+docker compose exec -T worker python /app/deploy/check_network.py
 ```
 
-该命令保留原持久卷。后续更新也须带上相同的环境文件、覆盖文件和项目名；否则可能移除 DNS 覆盖或访问另一套数据。网络切换后需重新确认 DNS 地址。不要将邮箱服务器 IP 固定到 hosts，也不要关闭 TLS 证书校验。已修好 Docker 主机 DNS 的环境无需使用此覆盖文件。
+如果显示 DNS 检查失败，先检查 Docker 主机或 Colima 的解析配置。曾遇到 Colima 的 `/etc/resolv.conf` 指向不存在的文件，导致容器访问外部服务时无法解析域名。可以用可选覆盖文件，为两个服务指定当前网络中从容器可达的 DNS。将示例地址替换成当前网络的 DNS，再执行一行部署：
+
+```sh
+MAIL_ASSISTANT_DNS=你的网络DNS地址 sh deploy/up.sh -f compose.yaml -f compose.dns.yaml
+```
+
+DNS 覆盖在容器运行时生效。构建阶段的仓库访问由 Docker Engine 和 BuildKit 的网络决定。需要代理时按 Docker 文档配置构建和运行时代理。[Docker 代理配置](https://docs.docker.com/engine/cli/proxy/)
+
+使用覆盖文件时，后续部署与维护命令沿用相同的 Compose 文件、环境文件和项目名。TCP 失败时检查出口端口，TLS 失败时检查系统时间和信任链。邮箱授权、模型与飞书配置在网页中分别测试。
+
+## 本地部署验收
+
+两个预构建镜像包均已从归档重新导入，在源码目录之外直接用 Docker 启动。ARM64 使用原生架构，AMD64 使用 QEMU。两者均通过默认健康检查、首次初始化、替换容器后使用原卷登录、样例摘要生成、带来源查询和四个外部服务的直连测试。
+
+2026-11-09 在独立 Colima 环境中完成 ARM64 构建，用无 `.env` 的源码副本和全新卷执行 `sh deploy/up.sh`，验证地址和凭证输出、网页初始化、UID 10001 读写、凭证文件 0600 权限、飞书 CLI 生成本地二维码和再次启动后的数据保留。Agently 在 UID 10001 下也成功在数据目录创建了工作区。
+
+容器回归覆盖旧配置导入、离线备份、新卷恢复、MCP 账号发现、摘要复用、查询来源及本地 CA HTTPS。启动检查在故意配置错误 HTTP 代理时仍能访问容器回环地址。
+
+AMD64 镜像在同一 ARM64 宿主机通过 QEMU 验证了构建、启动、初始化、导入、恢复、样例摘要和查询。首次交叉构建时 Node 在仿真环境中异常退出，现由构建机原生编译前端静态资源，运行时组件仍使用目标架构。[Docker 多平台构建](https://docs.docker.com/build/building/multi-platform/)
+
+在 Colima 复现了 DNS 配置缺失，使用可达 DNS 后，API 和 Worker 都通过网易、QQ、OpenRouter 和飞书的 DNS、TCP、TLS 检查。本地回归命令也已接入 CI 工作流：
+
+```sh
+python3 deploy/verify_containers.py --build --https --image mail-digest-agent:container-check
+```
 
 ## 待完成的部署验收
 

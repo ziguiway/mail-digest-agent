@@ -1,4 +1,5 @@
-FROM node:22-bookworm-slim AS web
+# Vite emits browser assets, so build them on the builder's native platform.
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
 WORKDIR /web
 RUN npm install --global pnpm@11.25.0
 COPY apps/web/package.json apps/web/pnpm-lock.yaml apps/web/pnpm-workspace.yaml ./
@@ -38,7 +39,7 @@ COPY --from=web /web/dist/ /app/apps/web/dist/
 COPY --from=lark /usr/local/bin/node /usr/local/bin/node
 COPY --from=lark /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
 RUN ln -s /usr/local/lib/node_modules/@larksuite/cli/scripts/run.js /usr/local/bin/lark-cli
-COPY deploy/health.py deploy/check_mail_connection.py /app/deploy/
+COPY deploy/health.py deploy/check_mail_connection.py deploy/check_network.py /app/deploy/
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -48,5 +49,7 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     TZ=Asia/Shanghai
 USER assistant
 EXPOSE 8765
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=4 \
+  CMD ["python", "/app/deploy/health.py", "standalone"]
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/app/.venv/bin/mail-assistant"]
-CMD ["--host", "0.0.0.0", "api"]
+CMD ["--host", "0.0.0.0", "api", "--embedded-worker"]

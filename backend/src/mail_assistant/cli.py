@@ -39,7 +39,11 @@ def _main():
     parser.add_argument("--port", type=int)
     parser.add_argument("--host")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("api", "worker", "run", "demo", "doctor", "bootstrap-token"):
+    api_command = commands.add_parser("api")
+    api_command.add_argument(
+        "--embedded-worker", action="store_true", help="在 API 进程内运行后台任务"
+    )
+    for name in ("worker", "run", "demo", "doctor", "bootstrap-token"):
         commands.add_parser(name)
     backup_command = commands.add_parser("backup", help="停止服务后备份整个工作空间")
     backup_command.add_argument(
@@ -170,7 +174,7 @@ def _main():
                 f"首次初始化凭证保存在 {settings.data_dir / 'bootstrap.token'}，可用 bootstrap-token 命令查看"
             )
         uvicorn.run(
-            create_app(settings, embedded_worker=args.command == "demo"),
+            create_app(settings, embedded_worker=args.command == "demo" or args.embedded_worker),
             host=settings.host,
             port=settings.port,
             proxy_headers=True,

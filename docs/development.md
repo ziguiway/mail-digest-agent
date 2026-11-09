@@ -61,9 +61,9 @@ pnpm test:e2e
 
 摘要采用最近 24 小时的完整范围，分析缓存、内容版本、检查时间与发送记录分别保存。`test_digest_refresh.py` 覆盖连续刷新、新增与同数量替换、滚动边界、并发请求、缓存失效、失败／部分覆盖、定时任务独立性、来源快照和旧数据迁移；`digest-refresh.spec.ts` 覆盖页面对应状态与版本选择。具体行为及当前部署证据见[摘要刷新设计](plans/digest-refresh-redesign.md)与[验证记录](verification/2026-11-04-digest-refresh.md)。
 
-真实查询与模型工具探测通过 `AgentlyIntelligence.bind_actions()` 统一绑定原生 Action，依据函数签名生成工具 Schema，并显式传入兼容提供者的 `request_options.tools`。查询限制四轮，保留实际读取来源校验。`test_query_recovery.py` 包含真实 Agently 与模拟 HTTP 流的协议回归，`query-recovery.spec.ts` 覆盖重试及恢复状态；详细证据见[智能查询修复验收](verification/2026-11-05-query-recovery.md)。
+真实查询的检索阶段与模型工具探测通过 `AgentlyIntelligence.bind_actions()` 统一绑定原生 Action，依据函数签名生成工具 Schema，并显式传入兼容提供者的 `request_options.tools`。检索限制四轮；最终结构化回答使用新的无工具请求，仅传入本轮证据、检索范围及必要对话标识，整体仍受 150 秒上限控制。找到邮件却未完成正文读取时明确失败，保留实际读取来源校验。`test_query_recovery.py` 包含真实 Agently 与模拟 HTTP 流的协议回归，验证最终请求不携带工具、空结果及旧统计隔离；`query-recovery.spec.ts` 覆盖重试及恢复状态。证据见[原查询修复验收](verification/2026-11-05-query-recovery.md)、[飞书等待反馈修复](verification/2026-11-05-feishu-feedback.md)。
 
-查询回答支持带版本的 `presentation` 表格，模型返回的行须与已读引用一一对应；来源标题和收件时间由服务端关联。文字 `content` 保持完整，供历史上下文与飞书使用；旧消息按原文展示。表格及迁移测试见 `test_query_tables.py`、`query-tables.spec.ts`，实现与部署证据见[聊天内简表验收](verification/2026-11-05-query-tables.md)。
+查询回答支持带版本的 `presentation` 表格，模型返回的行须与已读引用一一对应；来源标题和收件时间由服务端关联。文字 `content` 保持完整，供历史上下文与文字回退使用；旧消息按原文展示。飞书新投递由 `application/feishu_format.py` 将结构化结果转换成简洁通知，保留旧文字回退，不改变网页内容与已入队正文。表格及迁移测试见 `test_query_tables.py`、`query-tables.spec.ts`，实现与部署证据见[聊天内简表验收](verification/2026-11-05-query-tables.md)、[飞书简洁通知验收](verification/2026-11-05-feishu-concise.md)。
 
 后端 MCP 契约测试实际运行已安装版本的账号管理 CLI 与 stdio 子进程，使用临时目录、无效测试邮箱和本地地址，不执行 IMAP 登录。同步测试覆盖收件时间与 Date 头分离、超过 1,000 封的覆盖限制、缺少收件时间、分页冻结、UID 变化和部分同步水位。它们不证明真实 QQ／网易或真实模型可用。
 

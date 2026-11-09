@@ -1,6 +1,7 @@
 """Exercise isolated Compose projects; no real mailbox/model/Feishu credentials.
 
-Run after building the application image. Only randomly named verification
+Use --build to exercise the one-command installer on the first startup,
+or run against a prebuilt image. Only randomly named verification
 projects are created and removed; existing deployments are never selected.
 """
 
@@ -59,9 +60,12 @@ class Project:
         self.base = f"{'https://localhost' if tls else 'http://127.0.0.1'}:{self.port}"
         self.client = build_opener(ProxyHandler({}), HTTPCookieProcessor(self.jar))
 
-    def run(self, *args, data=None, check=True, timeout=240):
+    def run(self, *args, data=None, check=True, timeout=240, launch=False):
+        command = self.arguments
+        if launch:
+            command = ["sh", str(ROOT / "deploy/up.sh"), *self.arguments[2:]]
         result = subprocess.run(
-            self.arguments + list(args),
+            command + list(args),
             cwd=ROOT,
             env=self.env,
             input=data,
@@ -74,12 +78,18 @@ class Project:
             )
         return result
 
-    def start(self):
+    def start(self, *, build=False):
         print(
             f"Starting isolated {'HTTPS' if self.tls else self.env['MAIL_ASSISTANT_MODE']} project {self.name}",
             flush=True,
         )
-        self.run("up", "-d", "--no-build", "--wait", "--wait-timeout", "180")
+        if build:
+            launch = self.run(launch=True, timeout=1200)
+            token = self.run("exec", "-T", "api", "cat", "/var/lib/mail-assistant/bootstrap.token")
+            assert token.stdout.strip() in launch.stdout.splitlines()
+            assert self.base.encode() in launch.stdout
+        else:
+            self.run("up", "-d", "--no-build", "--wait", "--wait-timeout", "180")
         if self.tls:
             for _ in range(30):
                 certificate = self.run(
@@ -218,13 +228,28 @@ asyncio.run(check())
     )
 
 
-def verify(image, *, tls):
+def verify(image, *, tls, build=False):
     projects, password = [], secrets.token_urlsafe(24)
     results = []
     try:
         live = Project(image)
         projects.append(live)
-        live.start()
+        live.start(build=build)
+        if build:
+            results.append("one-command source build, startup, URL and bootstrap token")
+        live.run(
+            "exec",
+            "-T",
+            "-e",
+            "http_proxy=http://127.0.0.1:9",
+            "-e",
+            "no_proxy=",
+            "api",
+            "python",
+            "/app/deploy/health.py",
+            "api",
+        )
+        results.append("loopback API health check bypasses the outbound HTTP proxy")
         live.bootstrap(password)
         import_fixture(live)
         live.start()
@@ -258,7 +283,8 @@ def verify(image, *, tls):
         digest = demo.wait_task(seeded)
         assert len(demo.api("/digests/" + digest["digest_id"])["items"]) == 5
         repeated = demo.wait_task(demo.api("/digests", "POST", {}))
-        assert demo.api("/digests/" + repeated["digest_id"])["items"] == []
+        assert repeated["reused"] and repeated["digest_id"] == digest["digest_id"]
+        assert len(demo.api("/digests/" + repeated["digest_id"])["items"]) == 5
         question = demo.wait_task(
             demo.api(
                 "/questions",
@@ -329,10 +355,11 @@ def verify(image, *, tls):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", default="mail-digest-agent:local")
+    parser.add_argument("--build", action="store_true")
     parser.add_argument("--https", action="store_true")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
-    result = verify(args.image, tls=args.https)
+    result = verify(args.image, tls=args.https, build=args.build)
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(result, ensure_ascii=False, indent=2))

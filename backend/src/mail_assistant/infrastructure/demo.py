@@ -138,6 +138,19 @@ class DemoIntelligence:
             )
         return items
 
+    async def draft_reply(self, intent, source, linked):
+        latest = max([source, *linked], key=lambda mail: mail["sent_at"])
+        if (
+            "会议" in source["subject"]
+            and intent.startswith("确认参会")
+            and "周五 16:00" in latest["body"]
+        ):
+            body = "老师您好，\n\n我可以参加周五 16:00 的组会。"
+            if "PPT" in intent.upper():
+                body += "请问需要提前发送汇报 PPT 吗？"
+            return {"body": body + "\n\n谢谢老师。"}
+        return {"body": f"您好，\n\n{intent}\n\n谢谢。"}
+
     async def answer(self, question, history, tools, progress=None):
         update = any(word in question for word in ("更新", "后来", "最终", "那封", "改"))
         result = await tools.search_mails(

@@ -30,7 +30,13 @@ export function DeliveryHistory() {
         <article className="delivery-row" key={row.id}>
           <div className="section-heading">
             <strong>
-              {{ digest: '邮件摘要', query: '查询回复', test: '连接测试' }[row.kind] || '飞书消息'}
+              {{
+                digest: '邮件摘要',
+                query: '查询回复',
+                test: '连接测试',
+                request_ack: '接收提示',
+                request_error: '执行失败提示',
+              }[row.kind] || '飞书消息'}
             </strong>
             <Status value={row.status} />
           </div>

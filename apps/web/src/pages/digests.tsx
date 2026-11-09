@@ -68,7 +68,11 @@ export function DigestsPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [accountIds, setAccountIds] = useState<string[] | null>(null);
   const [filter, setFilter] = useState('all');
-  const [mailId, setMailId] = useState<string | null>(null);
+  const [mailTarget, setMailTarget] = useState<{
+    id: string;
+    digestId?: string;
+    draft: boolean;
+  } | null>(null);
   const job = useJob();
   const sending = useJob('digest-send');
   const pendingSelection = useRef<string | null>(null);
@@ -396,9 +400,30 @@ export function DigestsPage() {
                         <Clock size={15} />
                         {item.deadline || '截止时间未明确'}
                       </span>
-                      <Button variant="ghost" size="sm" onClick={() => setMailId(item.mail_id)}>
-                        查看邮件依据 <ArrowRight size={14} />
-                      </Button>
+                      <div className="reply-draft-actions">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            setMailTarget({ id: item.mail_id, digestId: digest.id, draft: true })
+                          }
+                        >
+                          起草回复
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            setMailTarget({
+                              id: item.mail_id,
+                              digestId: digest.legacy ? undefined : digest.id,
+                              draft: false,
+                            })
+                          }
+                        >
+                          查看邮件依据 <ArrowRight size={14} />
+                        </Button>
+                      </div>
                     </div>
                     <div className="reason">判断依据：{item.reason}</div>
                   </article>
@@ -432,9 +457,10 @@ export function DigestsPage() {
         </div>
       )}
       <MailDialog
-        id={mailId}
-        onClose={() => setMailId(null)}
-        digestId={digest?.legacy ? undefined : digest?.id}
+        id={mailTarget?.id || null}
+        onClose={() => setMailTarget(null)}
+        digestId={mailTarget?.digestId}
+        startInDraft={mailTarget?.draft}
       />
     </>
   );

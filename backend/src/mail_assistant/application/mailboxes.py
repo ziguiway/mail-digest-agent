@@ -68,6 +68,14 @@ class Mailboxes:
             data = data | {"observed_state": "historical"}
         return MailView.model_validate(data | {"account_label": account_label}).model_dump()
 
+    def cached_mail(self, mail_id):
+        with self.db.session() as session:
+            mail = session.get(Mail, mail_id)
+            if mail is None:
+                raise AppError("邮件不存在", "mail_not_found", status=404)
+            account = session.get(Account, mail.account_id)
+            return self.present(mail, account.label, account.folder, account.enabled)
+
     def read(self, mail_ids, account_ids=None):
         selected = {a["id"]: a for a in self.selected(account_ids)}
         with self.db.session() as session:
@@ -172,6 +180,7 @@ class Mailboxes:
                 if include_inactive
                 else self.selected(account_ids)
             )
+            if not account_ids or a["id"] in account_ids
         }
         with self.db.session() as session:
             seed = session.get(Mail, mail_id)

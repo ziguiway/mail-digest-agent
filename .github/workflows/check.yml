@@ -39,8 +39,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose config --quiet
-      - run: docker compose build
-      - run: python3 deploy/verify_containers.py --https --report /tmp/container-checks.json
+      - run: python3 deploy/verify_containers.py --build --https --report /tmp/container-checks.json
+      - name: Check standalone image startup
+        run: |
+          container=$(docker run --pull=never -d mail-digest-agent:local)
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          if ! timeout 90s sh -c 'until [ "$(docker inspect --format "{{.State.Health.Status}}" "$1")" = healthy ]; do sleep 1; done' sh "$container"; then
+            docker logs "$container"
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

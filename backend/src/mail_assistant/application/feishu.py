@@ -9,9 +9,8 @@ import time
 import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, func, exists, or_
 from sqlalchemy.exc import IntegrityError
 
 from ..domain.errors import AppError
@@ -38,6 +37,7 @@ from ..infrastructure.lark_cli import (
     cli_error,
     json_documents,
 )
+from .feishu_format import digest_notification, query_notification
 
 TEST_MESSAGE = "来信连接测试：已成功绑定此会话。启用飞书后，你可以在这里查询邮件，并接收每日摘要。"
 
@@ -504,7 +504,6 @@ class Feishu:
                 raise AppError("摘要不存在", "digest_not_found", status=404)
             if not digest.items:
                 raise AppError("摘要范围内没有邮件，无需推送", "empty_digest")
-            text = digest.title + "\n\n"
             group = session.get(DigestGroup, digest.group_id) if digest.group_id else None
             if group and group.latest_digest_id == digest.id and group.checked_at:
                 range_start = range_start or group.checked_start
@@ -513,33 +512,21 @@ class Feishu:
                 range_start or digest.range_start,
                 range_end or digest.range_end,
             )
-            if range_start and range_end:
-                zone = ZoneInfo(digest.timezone)
-                start = datetime.fromisoformat(range_start).astimezone(zone)
-                end = datetime.fromisoformat(range_end).astimezone(zone)
-                text += f"范围：{start:%m/%d %H:%M}—{end:%m/%d %H:%M}（{digest.timezone}）｜版本 {digest.revision}\n\n"
             sources = {m["id"]: m for m in digest.sources}
             for item in digest.items:
-                mail = session.get(Mail, item["mail_id"])
-                account = session.get(Account, mail.account_id)
-                source = sources.get(mail.id, record(mail))
-                label = source.get("account_label") or account.label
-                priority = {"high": "优先处理", "medium": "需要关注", "low": "信息通知"}[
-                    item["priority"]
-                ]
-                text += f"[{priority}] {item['summary']}\n行动：{item['action']}\n截止：{item.get('deadline') or '未明确'}\n判断：{item['reason']}\n依据：{label}｜{source['sender']}｜{source['subject']}｜{mail.id}\n\n"
-            for coverage in digest.coverage:
-                warnings = coverage.get("warnings", []) + (
-                    [coverage["error"]] if coverage.get("error") else []
-                )
-                if warnings:
-                    text += (
-                        "覆盖提示："
-                        + coverage.get("label", "邮箱")
-                        + "："
-                        + "；".join(warnings)
-                        + "\n"
-                    )
+                if item["mail_id"] not in sources:
+                    mail = session.get(Mail, item["mail_id"])
+                    if mail:
+                        account = session.get(Account, mail.account_id)
+                        sources[mail.id] = record(mail) | {
+                            "account_label": account.label if account else "邮箱"
+                        }
+            text = digest_notification(
+                record(digest),
+                [sources[item["mail_id"]] for item in digest.items if item["mail_id"] in sources],
+                range_start=range_start,
+                range_end=range_end,
+            )
         return self.queue_delivery(
             "digest", digest_id, text, reply_to=reply_to, binding_id=binding_id
         )
@@ -547,12 +534,9 @@ class Feishu:
     def queue_answer(self, message_id, context):
         with self.w.db.session() as session:
             message = session.get(Message, message_id)
-            text = message.content
-            if message.sources:
-                text += "\n\n邮件依据：\n" + "\n".join(
-                    f"{source['account_label']}｜{source['subject']}｜{source['id']}"
-                    for source in message.sources
-                )
+            if not message:
+                raise AppError("查询回答不存在", "message_not_found", status=404)
+            text = query_notification(message.content, message.presentation, message.sources)
         return self.queue_delivery(
             "query",
             message_id,
@@ -560,6 +544,70 @@ class Feishu:
             reply_to=context["message_id"],
             binding_id=context["binding_id"],
         )
+
+    def queue_request_ack(self, task):
+        context = task["payload"]["feishu"]
+        activity = "同步邮件并生成摘要" if task["kind"] == "digest" else "检索相关邮件并生成回答"
+        return self.queue_delivery(
+            "request_ack",
+            task["id"],
+            f"已收到，正在{activity}，请稍候。",
+            reply_to=context["message_id"],
+            binding_id=context["binding_id"],
+        )
+
+    def reconcile_notifications(self):
+        """Recover acknowledgement/failure intents after crashes without duplicate replies."""
+        state = self.state()
+        if not state.get("enabled") or not state.get("paired_at"):
+            return
+
+        def has_delivery(kind):
+            return exists(
+                select(Delivery.id).where(
+                    Delivery.source_id == Task.id,
+                    Delivery.kind == kind,
+                    Delivery.binding_id == state["binding_id"],
+                )
+            )
+
+        with self.w.db.session() as session:
+            tasks = [
+                record(task)
+                for task in session.scalars(
+                    select(Task)
+                    .where(
+                        Task.kind.in_(["query", "digest"]),
+                        Task.payload["feishu"]["notify"].as_boolean().is_(True),
+                        Task.payload["feishu"]["binding_id"].as_string() == state["binding_id"],
+                        or_(
+                            Task.status.in_(["queued", "running"]) & ~has_delivery("request_ack"),
+                            (Task.status == "failed") & ~has_delivery("request_error"),
+                        ),
+                    )
+                    .order_by(Task.created_at)
+                    .limit(20)
+                )
+            ]
+        for task in tasks:
+            try:
+                if task["status"] != "failed":
+                    self.queue_request_ack(task)
+                    continue
+                context = task["payload"]["feishu"]
+                title = "邮件摘要未完成" if task["kind"] == "digest" else "邮件查询未完成"
+                self.queue_delivery(
+                    "request_error",
+                    task["id"],
+                    f"{title}：{task['error'] or '服务暂时不可用，请稍后重试'}。\n"
+                    "可稍后重发这条问题，或在网页“任务记录”查看详情。",
+                    reply_to=context["message_id"],
+                    binding_id=context["binding_id"],
+                )
+            except AppError:
+                # A disconnect/re-pair can race this scan. Keep the intent in
+                # the task; its binding must never be replaced with a new one.
+                continue
 
     def test_send(self, binding_id):
         if not self.view()["listener"]["ready"]:
@@ -813,17 +861,19 @@ class Feishu:
             return
         key = f"feishu-event:{state['binding_id']}:{event['message_id']}"
         if text in {"/digest", "现在汇总一下", "立即汇总"}:
-            self.w.digests.enqueue(
+            task = self.w.digests.enqueue(
                 DigestInput(),
                 extra={
                     "deliver": True,
                     "feishu": {
                         "binding_id": state["binding_id"],
                         "message_id": event["message_id"],
+                        "notify": True,
                     },
                 },
                 key=key,
             )
+            self.queue_request_ack(task)
             return
         conversation_key = f"feishu-conversation:{state['binding_id']}:{event['chat_id']}"
         if text in {"/new", "新建对话"}:
@@ -835,15 +885,20 @@ class Feishu:
                     session.delete(row)
                 session.add(Receipt(key=key, data={"action": "new_conversation"}))
             return
-        self.w.questions.submit(
+        task = self.w.questions.submit(
             QuestionInput(question=text),
             channel="feishu",
             request_key=key,
             conversation_key=conversation_key,
             context={
-                "feishu": {"binding_id": state["binding_id"], "message_id": event["message_id"]}
+                "feishu": {
+                    "binding_id": state["binding_id"],
+                    "message_id": event["message_id"],
+                    "notify": True,
+                }
             },
         )
+        self.queue_request_ack(task)
 
     def listener_state(self, binding_id, **values):
         self.w.db.set(

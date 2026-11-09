@@ -45,6 +45,9 @@ class FakeAgent:
     def get_result(self):
         return self
 
+    def create_request(self):
+        return self
+
     async def async_get_data(self):
         if self.error:
             raise self.error
@@ -102,10 +105,34 @@ async def test_query_bounds_planning_and_preserves_source_validation(monkeypatch
     search = specs[0]["function"]["parameters"]
     assert search["required"] == ["keywords"] and search["properties"]["limit"]["default"] == 20
     assert agent.context["history"] == [{"role": "user", "content": "课程安排？", "sources": []}]
+    assert agent.context["evidence"] == [{}]
     agent.result["mail_ids"] = ["unread-mail"]
     with pytest.raises(AppError) as caught:
         await model.answer("课程安排？", [], tools({"mail-1": {}}))
     assert caught.value.code == "invalid_sources"
+
+
+async def test_final_generation_uses_current_evidence_without_old_answer_statistics(monkeypatch):
+    agent = FakeAgent({"answer": "本轮结论。", "mail_ids": ["mail-1"], "rows": []})
+    model = intelligence(monkeypatch, agent)
+    await model.answer(
+        "继续查询",
+        [{"role": "assistant", "content": "旧统计：邮箱共一封", "sources": [{"id": "old"}]}],
+        tools({"mail-1": {"id": "mail-1", "body": "当前正文"}}),
+    )
+    assert agent.context["history"] == [{"role": "assistant", "sources": [{"id": "old"}]}]
+    assert agent.context["evidence"] == [{"id": "mail-1", "body": "当前正文"}]
+    assert "旧统计" not in str(agent.context)
+
+
+async def test_found_but_unread_mails_are_not_reported_as_no_mail(monkeypatch):
+    agent = FakeAgent({"answer": "没有邮件", "mail_ids": [], "rows": []})
+    model = intelligence(monkeypatch, agent)
+    mail_tools = tools()
+    mail_tools.searches = [{"total": 6}]
+    with pytest.raises(AppError) as caught:
+        await model.answer("今天需要处理什么？", [], mail_tools)
+    assert caught.value.code == "mail_read_incomplete"
 
 
 @pytest.mark.parametrize(
@@ -117,6 +144,11 @@ async def test_query_bounds_planning_and_preserves_source_validation(monkeypatch
         (RuntimeError("Status Code: 402\nprivate-canary"), "model_quota_exceeded", False),
         (RuntimeError("Status Code: 429\nprivate-canary"), "model_rate_limited", True),
         (ValueError("private-canary"), "model_query_error", False),
+        (
+            ValueError("Can not satisfy ensure keys ['answer'] within 3 retries. private-canary"),
+            "model_output_error",
+            False,
+        ),
     ],
 )
 async def test_query_failures_keep_the_actual_safe_cause(monkeypatch, error, code, retryable):
@@ -160,8 +192,9 @@ import importlib
 import json
 
 
+@pytest.mark.parametrize("empty", [False, True])
 async def test_real_agently_native_wire_searches_reads_and_cites_without_provider_calls(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, empty
 ):
     class MailTools:
         def __init__(self):
@@ -172,7 +205,10 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
 
         async def search_mails(self, keywords: list[str]) -> dict:
             self.calls.append("search_mails")
-            return {"mails": [{"id": "mail-1", "subject": "课程安排"}], "total": 1}
+            return {
+                "mails": [] if empty else [{"id": "mail-1", "subject": "课程安排"}],
+                "total": 0 if empty else 1,
+            }
 
         async def read_mails(self, mail_ids: list[str]) -> dict:
             assert mail_ids == ["mail-1"]
@@ -184,19 +220,25 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
             raise AssertionError("No thread lookup is needed")
 
     mail_tools = MailTools()
+    mail_tools.searches = [{"total": 0}] if empty else []
     requests = []
 
     def respond(request):
         payload = json.loads(request.content)
         requests.append(payload)
-        assert {spec["function"]["name"] for spec in payload["tools"]} == {
-            "search_mails",
-            "read_mails",
-            "get_thread",
-        }
+        if payload.get("tools"):
+            assert {spec["function"]["name"] for spec in payload["tools"]} == {
+                "search_mails",
+                "read_mails",
+                "get_thread",
+            }
+        else:
+            assert mail_tools.calls == (
+                ["search_mails"] if empty else ["search_mails", "read_mails"]
+            )
         if not mail_tools.calls:
             name, arguments = "search_mails", {"keywords": []}
-        elif "read_mails" not in mail_tools.calls:
+        elif not empty and "read_mails" not in mail_tools.calls:
             name, arguments = "read_mails", {"mail_ids": ["mail-1"]}
         else:
             name, arguments = None, None
@@ -216,8 +258,10 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
                 "content": json.dumps(
                     {
                         "answer": "有一项课程作业需要处理。",
-                        "mail_ids": ["mail-1"],
-                        "rows": [
+                        "mail_ids": [] if empty else ["mail-1"],
+                        "rows": []
+                        if empty
+                        else [
                             {
                                 "mail_id": "mail-1",
                                 "handling": "action",
@@ -256,12 +300,16 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
     )
     try:
         result = await asyncio.wait_for(w.intelligence.answer("我需要做什么？", [], mail_tools), 20)
-        assert mail_tools.calls == ["search_mails", "read_mails"]
+        assert mail_tools.calls == (["search_mails"] if empty else ["search_mails", "read_mails"])
         assert result == {
             "answer": "有一项课程作业需要处理。",
-            "mail_ids": ["mail-1"],
-            "rows": [{"mail_id": "mail-1", "handling": "action", "action": "请提交课程作业。"}],
+            "mail_ids": [] if empty else ["mail-1"],
+            "rows": []
+            if empty
+            else [{"mail_id": "mail-1", "handling": "action", "action": "请提交课程作业。"}],
         }
         assert 3 <= len(requests) <= 6
+        assert any(request.get("tools") for request in requests)
+        assert not requests[-1].get("tools")
     finally:
         await w.close()

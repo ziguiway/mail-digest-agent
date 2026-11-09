@@ -740,6 +740,55 @@
         }
       }
     },
+    "/api/v1/mails/{mail_id}/reply-drafts": {
+      "post": {
+        "summary": "Reply Draft",
+        "operationId": "reply_draft_api_v1_mails__mail_id__reply_drafts_post",
+        "parameters": [
+          {
+            "name": "mail_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Mail Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplyDraftInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskView"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/mails/{mail_id}/thread": {
       "get": {
         "summary": "Thread",
@@ -2757,6 +2806,34 @@
           "question"
         ],
         "title": "QuestionInput"
+      },
+      "ReplyDraftInput": {
+        "properties": {
+          "intent": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Intent"
+          },
+          "digest_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "intent"
+        ],
+        "title": "ReplyDraftInput"
       },
       "ScheduleInput": {
         "properties": {

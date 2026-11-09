@@ -12,7 +12,7 @@ import httpx
 from pydantic import TypeAdapter, create_model
 from . import prompts
 from ..domain.errors import AppError
-from ..domain.schemas import DigestItem
+from ..domain.schemas import DigestItem, ReplyDraftWriting
 from ..domain.query_answers import validate_query_answer
 
 
@@ -30,6 +30,11 @@ def model_failure(exc, message, code):
                 "model_connection_failed",
                 retryable=True,
             )
+        if isinstance(current, ValueError) and (
+            "Can not satisfy ensure keys" in str(current)
+            or "Can not parse JSON output" in str(current)
+        ):
+            return AppError("模型未返回有效的回答结构，请稍后重试", "model_output_error")
         response = getattr(current, "response", None)
         status = getattr(response, "status_code", None)
         # Agently 4.1.4.10 wraps HTTP failures with this fixed prefix.
@@ -181,48 +186,98 @@ class AgentlyIntelligence:
     async def answer(self, question, history, tools, progress=None):
         agent = self.agent()
         self.bind_actions(agent, [tools.search_mails, tools.read_mails, tools.get_thread])
-        turn = (
-            agent.input(question)
-            .info(
-                {
-                    "history": [
-                        {
-                            key: message[key]
-                            for key in ("role", "content", "sources")
-                            if key in message
-                        }
-                        for message in history
-                    ],
-                    "now": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
-                    "coverage": tools.coverage(),
-                }
+        context = {
+            "history": [
+                {key: message[key] for key in ("role", "content", "sources") if key in message}
+                for message in history
+            ],
+            "now": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+            "coverage": tools.coverage(),
+        }
+
+        async def run():
+            await (
+                agent.input(question)
+                .info(context)
+                .instruct(prompts.QUERY_RETRIEVE)
+                .get_result()
+                .async_get_data()
             )
-            .instruct(prompts.QUERY)
-            .output(
-                {
-                    "answer": (str, "给用户的中文回答", True),
-                    "mail_ids": [(str, "本轮实际读到的邮件 id")],
-                    "rows": [
-                        {
-                            "mail_id": (str, "本轮已读且列入 mail_ids 的邮件 id", True),
-                            "handling": (str, "action / confirm / waiting / notice", True),
-                            "action": (str, "简短下一步建议，不编造期限或已完成状态", True),
-                        }
-                    ],
-                }
+            if not tools.calls:
+                raise AppError(
+                    "模型未调用邮件检索工具，请检查模型的工具调用能力", "tool_calling_unavailable"
+                )
+            searches = getattr(tools, "searches", [])
+            if not tools.evidence and (
+                not searches or any(search.get("total", 0) > 0 for search in searches)
+            ):
+                raise AppError("邮件检索尚未完成正文读取，请重试", "mail_read_incomplete")
+            if progress:
+                await progress("正在整理查询结果")
+            # A fresh request has no tools. Inheriting the retrieval agent's
+            # native tools here lets providers emit more calls instead of JSON.
+            final = (
+                self.agent()
+                .create_request()
+                .input(question)
+                .info(
+                    context
+                    | {
+                        "history": [
+                            message
+                            if message["role"] == "user"
+                            else {"role": message["role"], "sources": message.get("sources", [])}
+                            for message in context["history"]
+                        ],
+                        "evidence": list(tools.evidence.values()),
+                        "searches": searches,
+                    }
+                )
+                .instruct(prompts.QUERY_FINAL)
+                .output(
+                    {
+                        "answer": (str, "给用户的中文回答", True),
+                        "mail_ids": [(str, "本轮实际读到的邮件 id")],
+                        "rows": [
+                            {
+                                "mail_id": (str, "本轮已读且列入 mail_ids 的邮件 id", True),
+                                "handling": (str, "action / confirm / waiting / notice", True),
+                                "action": (str, "简短下一步建议，不编造期限或已完成状态", True),
+                            }
+                        ],
+                    }
+                )
             )
-        )
+            return await final.get_result().async_get_data()
+
         try:
-            data = await asyncio.wait_for(turn.get_result().async_get_data(), timeout=150)
+            data = await asyncio.wait_for(run(), timeout=150)
         except Exception as exc:
             raise model_failure(
                 exc, "模型查询未完成，请稍后重试或检查模型兼容性", "model_query_error"
             ) from exc
-        if not tools.calls:
-            raise AppError(
-                "模型未调用邮件检索工具，请检查模型的工具调用能力", "tool_calling_unavailable"
-            )
         return validate_query_answer(data, tools.evidence)
+
+    async def draft_reply(self, intent, source, linked):
+        request = (
+            self.agent()
+            .create_request()
+            .input({"intent": intent, "original_mail": source, "linked_mails": linked})
+            .instruct(prompts.REPLY_DRAFT)
+            .output(
+                {
+                    "body": (str, "邮件正文，需要澄清时留空", True),
+                    "clarification": (str, "必须确认的问题，草稿写好时留空", True),
+                }
+            )
+        )
+        try:
+            data = await asyncio.wait_for(request.get_result().async_get_data(), timeout=90)
+            return ReplyDraftWriting.model_validate(data)
+        except Exception as exc:
+            raise model_failure(
+                exc, "草稿未生成，请检查模型连接后重试", "reply_draft_error"
+            ) from exc
 
     async def probe(self):
         profile = self.db.get("model", {})

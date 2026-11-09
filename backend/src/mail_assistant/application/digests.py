@@ -34,6 +34,19 @@ class Digests:
         self.lock_dir = workspace.settings.data_dir / "digest-locks"
         self.lock_dir.mkdir(exist_ok=True, mode=0o700)
 
+    def source(self, digest_id, mail_id):
+        with self.db.session() as session:
+            digest = session.get(Digest, digest_id)
+            if not digest or not any(item["mail_id"] == mail_id for item in digest.items):
+                raise AppError("这封邮件不属于该摘要", "source_not_found", status=404)
+            source = next((mail for mail in digest.sources if mail["id"] == mail_id), None)
+            if source:
+                return source
+        try:
+            return self.w.mailboxes.cached_mail(mail_id)
+        except AppError as exc:
+            raise AppError("找不到这封邮件", "source_not_found", status=404) from exc
+
     @contextmanager
     def queue_lock(self, key):
         with (self.lock_dir / (key + ".queue")).open("a") as handle:

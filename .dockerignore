@@ -1,7 +1,9 @@
 .git
 .venv
-.env
-config.toml
+**/.env
+**/.env.*
+**/config.toml
+!mail_agent/templates/config.toml
 data
 runtime
 backups
@@ -14,4 +16,5 @@ backups
 **/*.tsbuildinfo
 build
 *.egg-info
-.DS_Store
+**/.DS_Store
+**/._*
