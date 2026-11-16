@@ -24,6 +24,9 @@ test('generate, edit and copy a reply draft from a digest item', async ({ page, 
   await dialog.getByRole('button', { name: '查看原邮件' }).click();
   await expect(dialog.getByRole('heading', { name: '课题组会议时间更新' })).toBeVisible();
   await expect(dialog.getByText(/地点 B202/)).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: '最近草稿' })).toBeVisible();
+  await expect(dialog.locator('.draft-history-item').first()).toContainText('网页');
+  await expect(dialog.locator('.draft-history-item').first()).toContainText('16:00');
   await dialog.getByRole('button', { name: '起草回复' }).click();
   await expect(dialog.getByLabel('草稿正文')).toHaveValue(edited);
   await dialog.getByRole('button', { name: '复制草稿' }).click();

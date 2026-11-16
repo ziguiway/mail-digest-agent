@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import re
 from datetime import datetime
+from itertools import islice
 from zoneinfo import ZoneInfo
 from typing import get_type_hints
 from agently import Agent, Agently
@@ -207,11 +208,18 @@ class AgentlyIntelligence:
                 raise AppError(
                     "模型未调用邮件检索工具，请检查模型的工具调用能力", "tool_calling_unavailable"
                 )
-            searches = getattr(tools, "searches", [])
-            if not tools.evidence and (
-                not searches or any(search.get("total", 0) > 0 for search in searches)
-            ):
-                raise AppError("邮件检索尚未完成正文读取，请重试", "mail_read_incomplete")
+            searches = tools.searches
+            if not tools.evidence:
+                if searches and all(search["total"] == 0 for search in searches):
+                    return {
+                        "answer": "在当前可检索的邮件中，没有找到符合条件的邮件。可以换个关键词，或扩大时间范围再试。",
+                        "mail_ids": [],
+                        "rows": [],
+                    }
+                if tools.candidates:
+                    await tools.read_mails(list(islice(tools.candidates, 10)))
+                if not tools.evidence:
+                    raise AppError("邮件检索尚未完成正文读取，请重试", "mail_read_incomplete")
             if progress:
                 await progress("正在整理查询结果")
             # A fresh request has no tools. Inheriting the retrieval agent's
@@ -258,11 +266,19 @@ class AgentlyIntelligence:
             ) from exc
         return validate_query_answer(data, tools.evidence)
 
-    async def draft_reply(self, intent, source, linked):
+    async def draft_reply(self, intent, source, linked, previous=None, revision=""):
         request = (
             self.agent()
             .create_request()
-            .input({"intent": intent, "original_mail": source, "linked_mails": linked})
+            .input(
+                {
+                    "intent": intent,
+                    "original_mail": source,
+                    "linked_mails": linked,
+                    "previous_draft": previous or {},
+                    "revision": revision,
+                }
+            )
             .instruct(prompts.REPLY_DRAFT)
             .output(
                 {

@@ -279,6 +279,64 @@ function ReplyDraftEditor({ mail, digestId }: { mail: Mail; digestId?: string })
   );
 }
 
+type DraftRecord = {
+  id: string;
+  intent: string;
+  subject: string;
+  body: string;
+  channel: 'feishu' | 'web';
+  created_at: string;
+};
+
+function DraftHistory({ mailId }: { mailId: string }) {
+  const [copied, setCopied] = useState('');
+  const { data } = useQuery({
+    queryKey: ['reply-drafts', mailId],
+    queryFn: () => api<DraftRecord[]>(`/mails/${mailId}/reply-drafts`),
+  });
+  if (!data?.length) return null;
+  async function copy(draft: DraftRecord) {
+    try {
+      await navigator.clipboard.writeText(`主题：${draft.subject}\n\n${draft.body}`);
+      setCopied(draft.id);
+    } catch {
+      setCopied('error');
+    }
+  }
+  return (
+    <section className="mail-drafts" aria-label="最近回复草稿">
+      <h3>最近草稿</h3>
+      <p className="muted">来自网页和飞书的草稿记录，可复制后到邮箱中发送。</p>
+      {data.map((draft) => (
+        <article className="draft-history-item" key={draft.id}>
+          <div className="draft-history-head">
+            <strong>{draft.subject || '（无主题）'}</strong>
+            <small>
+              {draft.channel === 'feishu' ? '飞书' : '网页'} · {time(draft.created_at)}
+            </small>
+          </div>
+          <p>{draft.body}</p>
+          <div className="draft-history-actions">
+            <Button size="sm" variant="outline" onClick={() => void copy(draft)}>
+              复制
+            </Button>
+            {copied === draft.id && (
+              <span className="field-hint" role="status">
+                已复制
+              </span>
+            )}
+            {copied === 'error' && (
+              <span className="field-hint" role="status">
+                浏览器未能访问剪贴板，可以选中内容手动复制。
+              </span>
+            )}
+          </div>
+        </article>
+      ))}
+    </section>
+  );
+}
+
 export function MailDialog({
   id,
   onClose,
@@ -455,6 +513,7 @@ export function MailDialog({
                     </>
                   )}
                 </section>
+                <DraftHistory mailId={data.id} />
               </div>
             </>
           )

@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from mail_assistant.api.app import create_app
+from mail_assistant.application.feishu import draft_key, draft_request, normalized_subject
 from mail_assistant.application.workspace import Workspace
 from mail_assistant.config import Settings
 from mail_assistant.domain.errors import AppError
@@ -657,3 +658,216 @@ async def test_digest_ack_has_a_final_reply_for_empty_or_partial_results(
         messages = session.scalars(select(Delivery).where(Delivery.kind == "digest_status")).all()
         assert len(messages) == 1 and messages[0].reply_to == "om_empty_digest"
         assert ("暂时无法给出完整摘要" if partial else "没有符合条件的邮件") in messages[0].text
+
+
+def test_draft_request_parsing_requires_a_quoted_title():
+    assert draft_request("回复《课题组会议时间更新》：确认参会") == (
+        "request",
+        "课题组会议时间更新",
+        "确认参会",
+    )
+    assert draft_request("帮我起草回复“课程项目阶段材料提交”：明天提交") == (
+        "request",
+        "课程项目阶段材料提交",
+        "明天提交",
+    )
+    assert draft_request("回复") == ("command", "", "")
+    assert draft_request("回复：") is None
+    assert draft_request("帮我看看今天的邮件") is None
+    assert normalized_subject(" RE： 课题组会议时间更新") == "课题组会议时间更新"
+
+
+async def test_feishu_draft_finds_a_unique_mail_and_returns_a_copyable_draft(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    text = "回复《课题组会议时间更新》：确认参会，询问是否需要提前提交 PPT"
+    w.feishu.receive(event(text, "om_draft_unique"))
+
+    with w.db.session() as session:
+        task = session.scalar(select(Task).where(Task.kind == "reply_draft"))
+        assert task.payload["intent"].startswith("确认参会")
+        assert task.payload["feishu"]["message_id"] == "om_draft_unique"
+        assert task.payload["ack"].startswith("已找到《课题组会议时间更新》")
+    ack = [d for d in w.feishu.deliveries() if d["kind"] == "request_ack"]
+    assert ack[0]["reply_to"] == "om_draft_unique"
+
+    result = await execute(w, "interactive")
+    assert "周五 16:00" in result["body"] and "PPT" in result["body"]
+    await execute(w, "delivery")
+    await execute(w, "delivery")
+    draft = next(d for d in w.feishu.deliveries() if d["kind"] == "reply_draft")
+    assert draft["status"] == "sent" and draft["reply_to"] == "om_draft_unique"
+    assert draft["text"].startswith("回复草稿 · 课题组会议时间更新")
+    assert "主题：Re: 课题组会议时间更新" in draft["text"]
+    assert "我可以参加周五 16:00 的组会" in draft["text"]
+    assert "草稿不会自动发送" in draft["text"]
+
+    w.feishu.receive(event(text, "om_draft_unique"))
+    with w.db.session() as session:
+        count = session.scalar(
+            select(func.count()).select_from(Task).where(Task.kind == "reply_draft")
+        )
+        assert count == 1
+
+
+async def test_feishu_draft_lists_candidates_and_waits_for_a_number(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.receive(event("回复《课题组会议》", "om_draft_candidates"))
+
+    choice = next(d for d in w.feishu.deliveries() if d["kind"] == "draft_choice")
+    assert "找到 2 封标题包含「课题组会议」的邮件" in choice["text"]
+    assert "1. 《课题组会议时间更新》" in choice["text"]
+    assert "2. 《课题组会议通知》" in choice["text"]
+    with w.db.session() as session:
+        assert session.scalar(select(Task).where(Task.kind == "reply_draft")) is None
+
+    w.feishu.receive(event("9", "om_draft_bad_number"))
+    status = next(
+        d
+        for d in w.feishu.deliveries()
+        if d["kind"] == "draft_status" and d["reply_to"] == "om_draft_bad_number"
+    )
+    assert "请回复 1–2 的序号" in status["text"]
+
+    w.feishu.receive(event("1", "om_draft_pick"))
+    status = next(
+        d
+        for d in w.feishu.deliveries()
+        if d["kind"] == "draft_status" and d["reply_to"] == "om_draft_pick"
+    )
+    assert "已选择《课题组会议时间更新》" in status["text"]
+    with w.db.session() as session:
+        chosen = session.scalar(select(Mail).where(Mail.subject == "课题组会议时间更新"))
+        session_state = w.db.get(draft_key(w.feishu.state()))
+        assert session_state["mail_id"] == chosen.id and session_state["stage"] == "intent"
+
+    w.feishu.receive(event("确认参会", "om_draft_pick_intent"))
+    with w.db.session() as session:
+        task = session.scalar(select(Task).where(Task.kind == "reply_draft"))
+        assert task.payload["mail_id"] == chosen.id
+        assert task.payload["intent"] == "确认参会"
+
+
+async def test_feishu_draft_asks_for_intent_and_reports_a_missing_mail(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.receive(event("回复《课题组会议时间更新》", "om_draft_ask"))
+    prompt = next(
+        d
+        for d in w.feishu.deliveries()
+        if d["kind"] == "draft_status" and d["reply_to"] == "om_draft_ask"
+    )
+    assert "已选择《课题组会议时间更新》" in prompt["text"]
+    with w.db.session() as session:
+        assert session.scalar(select(Task).where(Task.kind == "reply_draft")) is None
+
+    w.feishu.receive(event("确认参会", "om_draft_ask_intent"))
+    with w.db.session() as session:
+        task = session.scalar(select(Task).where(Task.kind == "reply_draft"))
+        assert task.payload["intent"] == "确认参会"
+
+    w.feishu.receive(event("回复《不存在的课程通知》", "om_draft_missing"))
+    missing = next(
+        d
+        for d in w.feishu.deliveries()
+        if d["kind"] == "draft_status" and d["reply_to"] == "om_draft_missing"
+    )
+    assert "没有找到标题包含「不存在的课程通知」的邮件" in missing["text"]
+
+
+async def test_feishu_draft_revision_reuses_the_previous_draft(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.receive(
+        event("回复《课题组会议时间更新》：确认参会，询问是否需要提前提交 PPT", "om_rev_1")
+    )
+    first = await execute(w, "interactive")
+
+    w.feishu.receive(event("再简短一些", "om_rev_2"))
+    with w.db.session() as session:
+        tasks = session.scalars(
+            select(Task).where(Task.kind == "reply_draft").order_by(Task.created_at)
+        ).all()
+        assert len(tasks) == 2
+        revised = next(task for task in tasks if task.payload.get("revision"))
+        assert revised.payload["revision"] == "再简短一些"
+        assert revised.payload["previous"]["body"] == first["body"]
+    ack = next(
+        d
+        for d in w.feishu.deliveries()
+        if d["kind"] == "request_ack" and d["reply_to"] == "om_rev_2"
+    )
+    assert "重新起草" in ack["text"]
+
+    second = await execute(w, "interactive")
+    assert second["body"].startswith(first["body"].rstrip() + "\n\n补充：再简短一些")
+
+
+async def test_feishu_draft_failure_reports_once_and_retry_succeeds(workspace, monkeypatch):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    writer = w.intelligence.draft_reply
+    monkeypatch.setattr(
+        w.intelligence,
+        "draft_reply",
+        AsyncMock(side_effect=AppError("模型暂时不可用", "model_unavailable")),
+    )
+    w.feishu.receive(event("回复《课题组会议时间更新》：确认参会", "om_fail_1"))
+    with pytest.raises(AppError):
+        await execute(w, "interactive")
+
+    w.feishu.reconcile_notifications()
+    await execute(w, "delivery")
+    error = next(d for d in w.feishu.deliveries() if d["kind"] == "request_error")
+    assert "回复草稿未完成" in error["text"]
+    assert "回复「重试」" in error["text"]
+
+    monkeypatch.setattr(w.intelligence, "draft_reply", writer)
+    w.feishu.receive(event("重试", "om_fail_2"))
+    retried = await execute(w, "interactive")
+    assert "周五 16:00" in retried["body"]
+    with w.db.session() as session:
+        count = session.scalar(
+            select(func.count()).select_from(Task).where(Task.kind == "reply_draft")
+        )
+        assert count == 2
+
+
+async def test_feishu_draft_session_expires_and_clears_on_exit_or_new(workspace):
+    w = workspace
+    await pair_without_listener(w)
+    w.feishu.change(w.feishu.state()["binding_id"], enabled=True)
+    w.feishu.receive(event("回复《课题组会议时间更新》", "om_life_1"))
+    key = draft_key(w.feishu.state())
+    assert w.db.get(key)["stage"] == "intent"
+
+    w.db.set(key, w.db.get(key) | {"expires_at": "2000-01-01T00:00:00.000+00:00"})
+    w.feishu.receive(event("结束", "om_life_2"))
+    assert w.db.get(key) is None
+    assert not [
+        d
+        for d in w.feishu.deliveries()
+        if d["kind"] == "draft_status" and d["reply_to"] == "om_life_2"
+    ]
+
+    w.feishu.receive(event("回复《课题组会议时间更新》", "om_life_3"))
+    assert w.db.get(key)["stage"] == "intent"
+    w.feishu.receive(event("结束", "om_life_4"))
+    ended = next(
+        d
+        for d in w.feishu.deliveries()
+        if d["kind"] == "draft_status" and d["reply_to"] == "om_life_4"
+    )
+    assert "已结束起草。" in ended["text"]
+    assert w.db.get(key) is None
+
+    w.feishu.receive(event("回复《课题组会议时间更新》", "om_life_5"))
+    assert w.db.get(key) is not None
+    w.feishu.receive(event("/new", "om_life_6"))
+    assert w.db.get(key) is None

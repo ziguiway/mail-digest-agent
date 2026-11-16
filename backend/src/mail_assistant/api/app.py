@@ -42,6 +42,7 @@ from ..domain.schemas import (
     ModelInput,
     ModelView,
     QuestionInput,
+    ReplyDraftHistoryView,
     ReplyDraftInput,
     ScheduleInput,
     TaskInput,
@@ -324,6 +325,36 @@ def create_app(settings=None, *, embedded_worker=False):
         return w.tasks.enqueue(
             "reply_draft", {"mail_id": mail_id, **form.model_dump()}, lane="interactive"
         )
+
+    @app.get(
+        "/api/v1/mails/{mail_id}/reply-drafts",
+        response_model=list[ReplyDraftHistoryView],
+    )
+    def reply_drafts(mail_id: str, w=Depends(owner)):
+        w.mailboxes.cached_mail(mail_id)
+        with w.db.session() as session:
+            rows = session.scalars(
+                select(Task)
+                .where(
+                    Task.kind == "reply_draft",
+                    Task.status == "succeeded",
+                    Task.payload["mail_id"].as_string() == mail_id,
+                )
+                .order_by(Task.created_at.desc())
+                .limit(10)
+            ).all()
+        return [
+            {
+                "id": row.id,
+                "intent": (row.payload or {}).get("intent", ""),
+                "subject": (row.result or {}).get("subject", ""),
+                "body": (row.result or {}).get("body", ""),
+                "channel": "feishu" if (row.payload or {}).get("feishu") else "web",
+                "created_at": row.created_at,
+            }
+            for row in rows
+            if (row.result or {}).get("body")
+        ]
 
     @app.get("/api/v1/mails/{mail_id}/thread")
     def thread(mail_id: str, w=Depends(owner)):

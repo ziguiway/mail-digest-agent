@@ -4,11 +4,13 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update, func, exists, or_
 from sqlalchemy.exc import IntegrityError
@@ -37,9 +39,88 @@ from ..infrastructure.lark_cli import (
     cli_error,
     json_documents,
 )
-from .feishu_format import digest_notification, query_notification
+from .feishu_format import (
+    digest_notification,
+    query_notification,
+    reply_draft_notification,
+    reply_draft_question,
+)
 
 TEST_MESSAGE = "来信连接测试：已成功绑定此会话。启用飞书后，你可以在这里查询邮件，并接收每日摘要。"
+DRAFT_TTL_MINUTES = 30
+DRAFT_EXIT = {"结束", "取消", "退出", "/end"}
+DRAFT_SWITCH = {"换一封", "重新选", "换邮件"}
+DRAFT_RETRY = {"重试", "再试一次"}
+DRAFT_REQUEST = re.compile(
+    r"^(?:帮我|请|麻烦)?(?:/reply|起草邮件回复|起草回复|回复草稿|回复)(?=\s|《|“|\"|\[|$)"
+)
+SUBJECT_PREFIXES = (
+    "re:",
+    "re：",
+    "回复:",
+    "回复：",
+    "答复:",
+    "答复：",
+    "fwd:",
+    "fw:",
+    "转发:",
+    "转发：",
+)
+
+
+def draft_key(state):
+    identity = f"{state.get('binding_id', '')}:{state.get('chat_id', '')}"
+    return "feishu_draft:" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+
+
+def normalized_subject(value):
+    value = " ".join(str(value or "").split()).casefold()
+    changed = True
+    while changed:
+        changed = False
+        for prefix in SUBJECT_PREFIXES:
+            if value.startswith(prefix):
+                value = value[len(prefix) :].strip()
+                changed = True
+    return value
+
+
+def split_draft_title(rest):
+    for opener, closer in (("《", "》"), ("“", "”"), ('"', '"'), ("[", "]")):
+        if not rest.startswith(opener):
+            continue
+        end = rest.find(closer, len(opener))
+        if end < 0:
+            return rest[len(opener) :].strip(), ""
+        return (
+            rest[len(opener) : end].strip(),
+            rest[end + len(closer) :].lstrip("：:，,。;； \t\n"),
+        )
+    return None, ""
+
+
+def draft_request(text):
+    """Return ("request", title, intent), ("command", "", ""), or None."""
+    match = DRAFT_REQUEST.match(text)
+    if not match:
+        return None
+    rest = text[match.end() :].strip()
+    if not rest:
+        return "command", "", ""
+    title, intent = split_draft_title(rest)
+    if title is None:
+        return None
+    return "request", title, intent
+
+
+def draft_time(value, timezone_name):
+    try:
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%m-%d %H:%M")
+    except (TypeError, ValueError, KeyError):
+        return ""
 
 
 def future(minutes=10):
@@ -545,16 +626,348 @@ class Feishu:
             binding_id=context["binding_id"],
         )
 
-    def queue_request_ack(self, task):
-        context = task["payload"]["feishu"]
-        activity = "同步邮件并生成摘要" if task["kind"] == "digest" else "检索相关邮件并生成回答"
+    def queue_reply_draft(self, task_id, result, context):
+        text = (
+            reply_draft_question(result)
+            if result.get("clarification") and not result.get("body")
+            else reply_draft_notification(result)
+        )
         return self.queue_delivery(
-            "request_ack",
-            task["id"],
-            f"已收到，正在{activity}，请稍候。",
+            "reply_draft",
+            task_id,
+            text,
             reply_to=context["message_id"],
             binding_id=context["binding_id"],
         )
+
+    def queue_request_ack(self, task):
+        context = task["payload"]["feishu"]
+        if task["kind"] == "reply_draft":
+            text = task["payload"].get("ack") or "正在起草回复，请稍候。"
+        else:
+            activity = (
+                "同步邮件并生成摘要" if task["kind"] == "digest" else "检索相关邮件并生成回答"
+            )
+            text = f"已收到，正在{activity}，请稍候。"
+        return self.queue_delivery(
+            "request_ack",
+            task["id"],
+            text,
+            reply_to=context["message_id"],
+            binding_id=context["binding_id"],
+        )
+
+    def draft_session(self):
+        state = self.state()
+        if not state.get("paired_at") or not state.get("chat_id"):
+            return None
+        value = self.w.db.get(draft_key(state))
+        if not isinstance(value, dict):
+            return None
+        if (value.get("expires_at") or "") <= stamp():
+            self.w.db.delete(draft_key(state))
+            return None
+        return value
+
+    def save_draft_session(self, value):
+        saved = value | {
+            "updated_at": stamp(),
+            "expires_at": future(DRAFT_TTL_MINUTES),
+        }
+        self.w.db.set(draft_key(self.state()), saved)
+        return saved
+
+    def clear_draft_session(self):
+        state = self.state()
+        if state.get("binding_id"):
+            self.w.db.delete(draft_key(state))
+
+    def draft_reply(self, event, kind, text):
+        return self.queue_delivery(
+            kind,
+            event["message_id"],
+            text,
+            reply_to=event["message_id"],
+            binding_id=self.state()["binding_id"],
+        )
+
+    def refresh_draft(self, session):
+        task_id = session.get("task_id")
+        if not task_id:
+            return session
+        with self.w.db.session() as db:
+            task = db.get(Task, task_id)
+            if not task:
+                return session | {"stage": "failed", "error": "任务记录已不可用"}
+            status, result, error = task.status, task.result or {}, task.error
+        if status == "succeeded":
+            if result.get("body"):
+                return session | {
+                    "stage": "review",
+                    "previous": {
+                        "subject": result.get("subject", ""),
+                        "body": result["body"],
+                    },
+                    "clarification": "",
+                }
+            if result.get("clarification"):
+                return session | {
+                    "stage": "intent",
+                    "clarification": result["clarification"],
+                    "previous": None,
+                }
+            return session | {"stage": "failed", "error": "草稿内容为空"}
+        if status == "failed":
+            return session | {"stage": "failed", "error": error or "服务暂时不可用"}
+        return session
+
+    def draft_candidate(self, mail):
+        timezone_name = (self.w.db.get("schedule", {}) or {}).get("timezone", "Asia/Shanghai")
+        return {
+            "id": mail["id"],
+            "subject": mail.get("subject") or "（无主题）",
+            "sender": mail.get("sender") or "",
+            "account_label": mail.get("account_label") or "",
+            "time": draft_time(mail.get("received_at") or mail.get("sent_at"), timezone_name),
+        }
+
+    @staticmethod
+    def candidate_index(text, size):
+        match = re.fullmatch(r"第?\s*([1-9])\s*封?", text.strip())
+        if not match:
+            return None
+        index = int(match.group(1)) - 1
+        return index if index < size else None
+
+    def receive_draft(self, event, key):
+        with self.w.db.session() as db:
+            if db.get(Receipt, key):
+                return True
+        handled = self._receive_draft(event, key)
+        if handled:
+            with self.w.db.session() as db:
+                if db.get(Receipt, key) is None:
+                    db.add(Receipt(key=key, data={"action": "draft"}))
+        return handled
+
+    def _receive_draft(self, event, key):
+        text = event["content"].strip()
+        session = self.draft_session()
+        if session:
+            session = self.refresh_draft(session)
+        request = draft_request(text)
+        if request and request[0] == "request":
+            return self.start_draft(event, key, request[1], request[2])
+        if not session:
+            if request:
+                self.save_draft_session(
+                    {
+                        "stage": "choose",
+                        "candidates": [],
+                        "mail": {},
+                        "mail_id": "",
+                        "intent": "",
+                    }
+                )
+                self.draft_reply(
+                    event,
+                    "draft_status",
+                    "要回复哪封邮件？发我邮件标题，或直接发「回复《邮件标题》：回复要点」。",
+                )
+                return True
+            return False
+        if text in DRAFT_EXIT:
+            self.clear_draft_session()
+            self.draft_reply(event, "draft_status", "已结束起草。")
+            return True
+        if text in DRAFT_SWITCH:
+            self.save_draft_session(
+                {"stage": "choose", "candidates": [], "mail": {}, "mail_id": "", "intent": ""}
+            )
+            self.draft_reply(event, "draft_status", "要回复哪封邮件？发我新的邮件标题。")
+            return True
+        stage = session.get("stage")
+        if stage == "drafting":
+            self.draft_reply(event, "draft_status", "草稿还在生成中，请稍候。")
+            return True
+        if stage == "failed":
+            if text in DRAFT_RETRY:
+                return self.enqueue_draft(event, key, session, session.get("intent", ""))
+            self.draft_reply(
+                event,
+                "draft_status",
+                f"上次草稿没有生成成功：{session.get('error') or '服务暂时不可用'}。"
+                "回复「重试」再试一次，或回复「结束」退出。",
+            )
+            return True
+        if stage == "choose":
+            candidates = session.get("candidates") or []
+            if not candidates:
+                return self.start_draft(event, key, text.strip('《》“”"[] '), "")
+            index = self.candidate_index(text, len(candidates))
+            if index is None:
+                self.draft_reply(
+                    event,
+                    "draft_status",
+                    f"请回复 1–{len(candidates)} 的序号，或回复「取消」退出。",
+                )
+                return True
+            return self.select_candidate(event, key, session, candidates[index])
+        if stage == "intent":
+            return self.submit_intent(event, key, session, text)
+        if stage == "review":
+            if text.startswith("/"):
+                return False
+            return self.enqueue_draft(
+                event,
+                key,
+                session,
+                session.get("intent", ""),
+                revision=text,
+                previous=session.get("previous"),
+            )
+        return False
+
+    def start_draft(self, event, key, title, intent):
+        title = " ".join(title.split())
+        if len(title) < 2:
+            self.draft_reply(
+                event,
+                "draft_status",
+                "请用《》写清邮件标题，例如「回复《课题组会议时间更新》：确认参会」。",
+            )
+            return True
+        if len(title) > 100:
+            self.draft_reply(event, "draft_status", "标题关键词太长了，请控制在 100 字以内。")
+            return True
+        try:
+            result = self.w.mailboxes.search(keywords=[title], limit=10, cache_state="all")
+        except AppError as exc:
+            self.draft_reply(event, "draft_status", f"读取邮件缓存失败：{exc.message}")
+            return True
+        wanted = normalized_subject(title)
+        mails = [
+            mail
+            for mail in result["mails"]
+            if wanted and wanted in normalized_subject(mail.get("subject"))
+        ]
+        if not mails:
+            self.save_draft_session(
+                {"stage": "choose", "candidates": [], "mail": {}, "mail_id": "", "intent": ""}
+            )
+            self.draft_reply(
+                event,
+                "draft_status",
+                f"没有找到标题包含「{title}」的邮件。可以换一个更短的标题关键词，"
+                "或先在网页同步邮箱。",
+            )
+            return True
+        if len(mails) == 1:
+            return self.select_candidate(
+                event, key, {"intent": intent or ""}, self.draft_candidate(mails[0])
+            )
+        candidates = [self.draft_candidate(mail) for mail in mails[:3]]
+        self.save_draft_session(
+            {
+                "stage": "choose",
+                "candidates": candidates,
+                "mail": {},
+                "mail_id": "",
+                "intent": intent or "",
+            }
+        )
+        lines = [f"找到 {len(mails)} 封标题包含「{title}」的邮件"]
+        if len(mails) > len(candidates):
+            lines[0] += f"，先列出最近 {len(candidates)} 封"
+        lines[0] += "，回复序号继续："
+        for index, candidate in enumerate(candidates, 1):
+            meta = " · ".join(
+                value
+                for value in (
+                    candidate["sender"],
+                    candidate["account_label"],
+                    candidate["time"],
+                )
+                if value
+            )
+            lines.append(f"{index}. 《{candidate['subject']}》" + (f" · {meta}" if meta else ""))
+        lines.append("回复「1」继续；回复「取消」退出。")
+        self.draft_reply(event, "draft_choice", "\n".join(lines))
+        return True
+
+    def select_candidate(self, event, key, session, candidate):
+        chosen = {
+            "stage": "intent",
+            "candidates": [],
+            "mail": candidate,
+            "mail_id": candidate["id"],
+            "intent": session.get("intent", ""),
+        }
+        if chosen["intent"]:
+            return self.enqueue_draft(event, key, chosen, chosen["intent"])
+        self.save_draft_session(chosen)
+        self.draft_reply(
+            event,
+            "draft_status",
+            f"已选择《{candidate['subject']}》。想怎么回？直接发我回复要点，"
+            "例如「确认参会，询问是否需要提前发 PPT」。\n回复「换一封」或「结束」退出。",
+        )
+        return True
+
+    def submit_intent(self, event, key, session, text):
+        text = " ".join(text.split())
+        if not text:
+            self.draft_reply(event, "draft_status", "请发我回复要点。")
+            return True
+        if session.get("clarification"):
+            intent = (session.get("intent", "") + "\n补充说明：" + text).strip()
+        else:
+            intent = text
+        return self.enqueue_draft(event, key, session, intent)
+
+    def enqueue_draft(self, event, key, session, intent, *, revision="", previous=None):
+        intent = intent.strip()
+        if not intent:
+            self.draft_reply(event, "draft_status", "请先发我回复要点。")
+            return True
+        if len(intent) > 2000:
+            self.draft_reply(event, "draft_status", "回复要点太长了，请精简到 2000 字以内。")
+            return True
+        subject = (session.get("mail") or {}).get("subject") or "原邮件"
+        ack = (
+            "正在按你的修改要求重新起草，请稍候。"
+            if revision
+            else f"已找到《{subject}》，正在起草回复，请稍候。"
+        )
+        task = self.w.tasks.enqueue(
+            "reply_draft",
+            {
+                "mail_id": session["mail_id"],
+                "intent": intent,
+                "revision": revision,
+                "previous": previous,
+                "ack": ack,
+                "feishu": {
+                    "binding_id": self.state()["binding_id"],
+                    "message_id": event["message_id"],
+                    "notify": True,
+                },
+            },
+            lane="interactive",
+            key=key,
+        )
+        self.save_draft_session(
+            session
+            | {
+                "stage": "drafting",
+                "task_id": task["id"],
+                "intent": intent,
+                "previous": previous,
+                "clarification": "",
+            }
+        )
+        self.queue_request_ack(task)
+        return True
 
     def reconcile_notifications(self):
         """Recover acknowledgement/failure intents after crashes without duplicate replies."""
@@ -577,7 +990,7 @@ class Feishu:
                 for task in session.scalars(
                     select(Task)
                     .where(
-                        Task.kind.in_(["query", "digest"]),
+                        Task.kind.in_(["query", "digest", "reply_draft"]),
                         Task.payload["feishu"]["notify"].as_boolean().is_(True),
                         Task.payload["feishu"]["binding_id"].as_string() == state["binding_id"],
                         or_(
@@ -595,12 +1008,20 @@ class Feishu:
                     self.queue_request_ack(task)
                     continue
                 context = task["payload"]["feishu"]
-                title = "邮件摘要未完成" if task["kind"] == "digest" else "邮件查询未完成"
+                title = {
+                    "digest": "邮件摘要未完成",
+                    "query": "邮件查询未完成",
+                    "reply_draft": "回复草稿未完成",
+                }[task["kind"]]
+                hint = (
+                    "回复「重试」可以再试一次，或在网页“任务记录”查看详情。"
+                    if task["kind"] == "reply_draft"
+                    else "可稍后重发这条问题，或在网页“任务记录”查看详情。"
+                )
                 self.queue_delivery(
                     "request_error",
                     task["id"],
-                    f"{title}：{task['error'] or '服务暂时不可用，请稍后重试'}。\n"
-                    "可稍后重发这条问题，或在网页“任务记录”查看详情。",
+                    f"{title}：{task['error'] or '服务暂时不可用，请稍后重试'}。\n" + hint,
                     reply_to=context["message_id"],
                     binding_id=context["binding_id"],
                 )
@@ -884,6 +1305,9 @@ class Feishu:
                 if row:
                     session.delete(row)
                 session.add(Receipt(key=key, data={"action": "new_conversation"}))
+            self.clear_draft_session()
+            return
+        if self.receive_draft(event, key):
             return
         task = self.w.questions.submit(
             QuestionInput(question=text),

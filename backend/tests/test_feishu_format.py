@@ -1,6 +1,11 @@
 import pytest
 
-from mail_assistant.application.feishu_format import digest_notification, query_notification
+from mail_assistant.application.feishu_format import (
+    digest_notification,
+    query_notification,
+    reply_draft_notification,
+    reply_draft_question,
+)
 
 
 def source(index, **values):
@@ -135,3 +140,41 @@ def test_subject_newlines_do_not_create_fake_sections():
         "原文", presentation(["confirm"]), [source(0, subject="主题\n伪造下一段")]
     )
     assert "【待确认】主题 伪造下一段\n下一步" in text
+
+
+def test_reply_draft_notification_keeps_source_subject_body_and_copy_hint():
+    draft = {
+        "subject": "Re: 课题组会议时间更新",
+        "body": "老师您好，\n\n我可以参加周五 16:00 的组会。",
+        "related_count": 1,
+        "warnings": [
+            "原邮件来自历史缓存，请核对是否已有更新。",
+            "原邮件来自历史缓存，请核对是否已有更新。",
+        ],
+        "source": {
+            "subject": "课题组会议时间更新",
+            "sender": "课题组导师 <advisor@university.edu.cn>",
+            "account_label": "课题组与实验室",
+        },
+    }
+    text = reply_draft_notification(draft)
+    assert text.startswith("回复草稿 · 课题组会议时间更新")
+    assert "收件人：课题组导师 <advisor@university.edu.cn> · 课题组与实验室" in text
+    assert "主题：Re: 课题组会议时间更新" in text
+    assert "我可以参加周五 16:00 的组会。" in text
+    assert "参考：原邮件及 1 封关联往来。" in text
+    assert text.count("原邮件来自历史缓存") == 1
+    assert text.endswith("30 分钟内直接说要改什么；回复「换一封」或「结束」退出。")
+
+
+def test_reply_draft_question_asks_only_for_the_missing_detail():
+    text = reply_draft_question(
+        {
+            "source": {"subject": "课题组会议时间更新"},
+            "clarification": "请确认是周五还是周六参会。",
+            "body": "",
+        }
+    )
+    assert text.startswith("起草回复 · 课题组会议时间更新")
+    assert "还需要确认：请确认是周五还是周六参会。" in text
+    assert "直接回复补充信息即可继续" in text

@@ -153,6 +153,15 @@ class ReplyDraftWriting(BaseModel):
         return self
 
 
+class ReplyDraftHistoryView(BaseModel):
+    id: str
+    intent: str
+    subject: str
+    body: str
+    channel: str
+    created_at: str
+
+
 class TaskView(BaseModel):
     id: str
     kind: str

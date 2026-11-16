@@ -106,6 +106,45 @@ def query_notification(content, presentation, sources):
     return "\n\n".join(blocks)
 
 
+DRAFT_HINT = (
+    "草稿不会自动发送，可直接长按复制。\n30 分钟内直接说要改什么；回复「换一封」或「结束」退出。"
+)
+
+
+def reply_draft_notification(draft):
+    source = draft.get("source") or {}
+    title = line(source.get("subject")) or "原邮件"
+    recipient = " · ".join(
+        value for value in (line(source.get("sender")), line(source.get("account_label"))) if value
+    )
+    blocks = [f"回复草稿 · {title}"]
+    if recipient:
+        blocks.append("收件人：" + recipient)
+    blocks.append("主题：" + (line(draft.get("subject")) or "Re: " + title))
+    if draft.get("body"):
+        blocks.append(str(draft["body"]).strip())
+    if draft.get("related_count"):
+        blocks.append(f"参考：原邮件及 {draft['related_count']} 封关联往来。")
+    notes = [line(note) for note in draft.get("warnings") or [] if line(note)]
+    if notes:
+        blocks.append("说明：" + "；".join(dict.fromkeys(notes)))
+    blocks.append(DRAFT_HINT)
+    return "\n\n".join(blocks)
+
+
+def reply_draft_question(draft):
+    source = draft.get("source") or {}
+    title = line(source.get("subject")) or "原邮件"
+    question = line(draft.get("clarification")) or "还需要补充必要信息。"
+    return "\n\n".join(
+        [
+            f"起草回复 · {title}",
+            "还需要确认：" + question,
+            "直接回复补充信息即可继续；回复「结束」退出。",
+        ]
+    )
+
+
 def digest_notification(digest, sources, *, range_start=None, range_end=None):
     by_id = {source["id"]: source for source in sources}
     items = digest["items"]

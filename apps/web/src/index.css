@@ -973,6 +973,55 @@ h2 {
   margin-top: 16px;
   font-size: 12px;
 }
+.mail-drafts {
+  border-top: 1px solid #eaeaea;
+  margin-top: 20px;
+  padding-top: 20px;
+}
+.mail-drafts h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+.mail-drafts .muted {
+  font-size: 12px;
+  margin: 8px 0;
+}
+.draft-history-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #eaeaea;
+}
+.draft-history-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+}
+.draft-history-head strong {
+  overflow-wrap: anywhere;
+}
+.draft-history-head small {
+  color: #63685a;
+  font-size: 11px;
+}
+.draft-history-item p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #5f6955;
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 8px 0;
+}
+.draft-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 .digest-layout {
   display: grid;
   grid-template-columns: 205px minmax(0, 1fr);

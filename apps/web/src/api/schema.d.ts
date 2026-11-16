@@ -322,7 +322,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Reply Drafts */
+        get: operations["reply_drafts_api_v1_mails__mail_id__reply_drafts_get"];
         put?: never;
         /** Reply Draft */
         post: operations["reply_draft_api_v1_mails__mail_id__reply_drafts_post"];
@@ -1183,6 +1184,21 @@ export interface components {
             /** Request Id */
             request_id?: string | null;
         };
+        /** ReplyDraftHistoryView */
+        ReplyDraftHistoryView: {
+            /** Id */
+            id: string;
+            /** Intent */
+            intent: string;
+            /** Subject */
+            subject: string;
+            /** Body */
+            body: string;
+            /** Channel */
+            channel: string;
+            /** Created At */
+            created_at: string;
+        };
         /** ReplyDraftInput */
         ReplyDraftInput: {
             /** Intent */
@@ -1919,6 +1935,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MailView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reply_drafts_api_v1_mails__mail_id__reply_drafts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mail_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplyDraftHistoryView"][];
                 };
             };
             /** @description Validation Error */

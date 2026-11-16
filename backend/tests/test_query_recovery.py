@@ -76,6 +76,8 @@ def tools(evidence=None):
         get_thread=get_thread,
         calls=["search_mails", "read_mails"],
         evidence=evidence or {},
+        searches=[],
+        candidates={},
         coverage=lambda: [],
     )
 
@@ -192,23 +194,31 @@ import importlib
 import json
 
 
-@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("scenario", ["matched", "empty", "broadened"])
 async def test_real_agently_native_wire_searches_reads_and_cites_without_provider_calls(
-    tmp_path, monkeypatch, empty
+    tmp_path, monkeypatch, scenario
 ):
+    empty, broadened = scenario == "empty", scenario == "broadened"
+    no_match = empty or broadened
+
     class MailTools:
         def __init__(self):
             self.calls, self.evidence = [], {}
+            self.searches, self.candidates = [], {}
 
         def coverage(self):
             return []
 
         async def search_mails(self, keywords: list[str]) -> dict:
             self.calls.append("search_mails")
-            return {
-                "mails": [] if empty else [{"id": "mail-1", "subject": "课程安排"}],
-                "total": 0 if empty else 1,
-            }
+            mails = (
+                []
+                if empty or (broadened and keywords)
+                else [{"id": "mail-1", "subject": "课程安排"}]
+            )
+            self.searches.append({"total": len(mails)})
+            self.candidates.update(dict.fromkeys(mail["id"] for mail in mails))
+            return {"mails": mails, "total": len(mails)}
 
         async def read_mails(self, mail_ids: list[str]) -> dict:
             assert mail_ids == ["mail-1"]
@@ -220,7 +230,6 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
             raise AssertionError("No thread lookup is needed")
 
     mail_tools = MailTools()
-    mail_tools.searches = [{"total": 0}] if empty else []
     requests = []
 
     def respond(request):
@@ -233,12 +242,13 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
                 "get_thread",
             }
         else:
-            assert mail_tools.calls == (
-                ["search_mails"] if empty else ["search_mails", "read_mails"]
-            )
+            assert not empty
+            assert mail_tools.calls[-1] == "read_mails"
         if not mail_tools.calls:
+            name, arguments = "search_mails", {"keywords": ["导师"] if no_match else []}
+        elif broadened and len(mail_tools.calls) == 1:
             name, arguments = "search_mails", {"keywords": []}
-        elif not empty and "read_mails" not in mail_tools.calls:
+        elif not no_match and "read_mails" not in mail_tools.calls:
             name, arguments = "read_mails", {"mail_ids": ["mail-1"]}
         else:
             name, arguments = None, None
@@ -257,10 +267,10 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
             delta = {
                 "content": json.dumps(
                     {
-                        "answer": "有一项课程作业需要处理。",
-                        "mail_ids": [] if empty else ["mail-1"],
+                        "answer": "未找到相关邮件。" if broadened else "有一项课程作业需要处理。",
+                        "mail_ids": [] if no_match else ["mail-1"],
                         "rows": []
-                        if empty
+                        if no_match
                         else [
                             {
                                 "mail_id": "mail-1",
@@ -300,16 +310,20 @@ async def test_real_agently_native_wire_searches_reads_and_cites_without_provide
     )
     try:
         result = await asyncio.wait_for(w.intelligence.answer("我需要做什么？", [], mail_tools), 20)
-        assert mail_tools.calls == (["search_mails"] if empty else ["search_mails", "read_mails"])
-        assert result == {
-            "answer": "有一项课程作业需要处理。",
-            "mail_ids": [] if empty else ["mail-1"],
-            "rows": []
-            if empty
-            else [{"mail_id": "mail-1", "handling": "action", "action": "请提交课程作业。"}],
-        }
-        assert 3 <= len(requests) <= 6
-        assert any(request.get("tools") for request in requests)
-        assert not requests[-1].get("tools")
+        if empty:
+            assert mail_tools.calls == ["search_mails"]
+            assert "没有找到符合条件的邮件" in result["answer"]
+            assert not result["mail_ids"] and not result["rows"]
+            assert all(request.get("tools") for request in requests)
+        else:
+            assert mail_tools.calls == ["search_mails"] * (2 if broadened else 1) + ["read_mails"]
+            assert result == {
+                "answer": "未找到相关邮件。" if broadened else "有一项课程作业需要处理。",
+                "mail_ids": [] if broadened else ["mail-1"],
+                "rows": []
+                if broadened
+                else [{"mail_id": "mail-1", "handling": "action", "action": "请提交课程作业。"}],
+            }
+            assert not requests[-1].get("tools")
     finally:
         await w.close()

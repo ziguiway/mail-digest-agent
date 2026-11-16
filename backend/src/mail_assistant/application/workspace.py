@@ -27,6 +27,7 @@ class QueryTools:
         self.workspace, self.account_ids, self.task_id = workspace, account_ids, task_id
         self.evidence, self.calls = {}, []
         self.searches = []
+        self.candidates = {}
 
     async def stage(self, name, title):
         self.calls.append(name)
@@ -65,6 +66,8 @@ class QueryTools:
             offset=offset,
             cache_state=cache_state,
         )
+        for mail in result["mails"]:
+            self.candidates[mail["id"]] = None
         result["mails"] = [
             m
             | {
@@ -294,7 +297,13 @@ class Workspace:
             warnings.append("原邮件来自历史或尚未确认的缓存，请核对是否已有更新。")
         await self.progress(task["id"], "正在起草回复")
         writing = ReplyDraftWriting.model_validate(
-            await self.intelligence.draft_reply(payload["intent"], original, linked)
+            await self.intelligence.draft_reply(
+                payload["intent"],
+                original,
+                linked,
+                payload.get("previous"),
+                (payload.get("revision") or "").strip(),
+            )
         )
         subject = " ".join(source["subject"].split()) or "（无主题）"
         if not subject.lower().startswith(("re:", "re：", "回复:", "回复：", "答复:", "答复：")):
@@ -305,6 +314,14 @@ class Workspace:
             "clarification": writing.clarification,
             "related_count": len(related),
             "warnings": warnings,
+            "source": {
+                "id": source["id"],
+                "subject": source["subject"],
+                "sender": source["sender"],
+                "account_label": source.get("account_label", ""),
+                "received_at": source.get("received_at"),
+                "observed_state": source.get("observed_state", "unknown"),
+            },
         }
 
     async def answer(self, task):
@@ -467,7 +484,10 @@ class Workspace:
                 self.feishu.queue_answer(result["message_id"], context)
             return result
         if kind == "reply_draft":
-            return await self.draft_reply(task)
+            result = await self.draft_reply(task)
+            if context := task["payload"].get("feishu"):
+                self.feishu.queue_reply_draft(task["id"], result, context)
+            return result
         if kind == "feishu_authorize":
             return await self.feishu.authorize(task)
         if kind == "feishu_send":

@@ -138,7 +138,9 @@ class DemoIntelligence:
             )
         return items
 
-    async def draft_reply(self, intent, source, linked):
+    async def draft_reply(self, intent, source, linked, previous=None, revision=""):
+        if revision and previous and previous.get("body"):
+            return {"body": previous["body"].rstrip() + "\n\n补充：" + revision}
         latest = max([source, *linked], key=lambda mail: mail["sent_at"])
         if (
             "会议" in source["subject"]

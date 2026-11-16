@@ -11,7 +11,7 @@ from sqlalchemy import select
 from mail_assistant.api.app import create_app
 from mail_assistant.application.workspace import Workspace
 from mail_assistant.config import Settings
-from mail_assistant.domain.models import Mail
+from mail_assistant.domain.models import Mail, Task
 from mail_assistant.domain.schemas import ModelInput
 from mail_assistant.infrastructure.database import record
 
@@ -60,8 +60,9 @@ async def test_reply_uses_saved_source_and_only_reference_linked_mails_from_same
         )
         result = await w.execute(w.tasks.claim("interactive"))
         w.tasks.finish(task["id"], result)
-        intent, original, linked = writer.call_args.args
+        intent, original, linked, previous, revision = writer.call_args.args
         assert intent == "确认参会" and "周五 16:00" in original["body"]
+        assert previous is None and revision == ""
         assert len(linked) == result["related_count"] == 1
         assert linked[0]["subject"] == "课题组会议通知"
         assert result["subject"] == "Re: 课题组会议时间更新"
@@ -138,3 +139,46 @@ async def test_agently_generates_a_draft_or_clarification_without_tools(
         assert result.model_dump() == answer
     finally:
         await w.close()
+
+
+def test_reply_draft_history_lists_succeeded_drafts_for_the_mail(tmp_path):
+    app = create_app(Settings(tmp_path, mode="demo"))
+    with TestClient(app) as client:
+        assert client.post("/api/v1/demo/start").status_code == 200
+        w = app.state.workspace
+        mails = client.get("/api/v1/mails").json()["mails"]
+        target = next(mail for mail in mails if mail["subject"] == "课题组会议时间更新")
+        other = next(mail for mail in mails if mail["id"] != target["id"])
+        path = f"/api/v1/mails/{target['id']}/reply-drafts"
+        assert client.get(path).json() == []
+
+        def finish(subject, body, mail_id=target["id"], feishu=False, created_at=""):
+            payload = {"mail_id": mail_id, "intent": "确认参会"}
+            if feishu:
+                payload["feishu"] = {"binding_id": "binding", "message_id": "om", "notify": True}
+            task = w.tasks.enqueue("reply_draft", payload, lane="interactive")
+            w.tasks.finish(task["id"], {"subject": subject, "body": body})
+            if created_at:
+                with w.db.session() as session:
+                    session.get(Task, task["id"]).created_at = created_at
+
+        finish(
+            "Re: 课题组会议时间更新",
+            "老师您好，我可以参会。",
+            created_at="2026-11-11T09:00:00.000+00:00",
+        )
+        finish(
+            "Re: 课题组会议时间更新",
+            "我可以参会。",
+            feishu=True,
+            created_at="2026-11-11T10:00:00.000+00:00",
+        )
+        finish("", "", created_at="2026-11-11T11:00:00.000+00:00")
+        finish("Re: 其他邮件", "别的正文", mail_id=other["id"])
+
+        history = client.get(path).json()
+        assert [row["body"] for row in history] == ["我可以参会。", "老师您好，我可以参会。"]
+        assert [row["channel"] for row in history] == ["feishu", "web"]
+        assert history[0]["intent"] == "确认参会"
+        assert history[0]["subject"] == "Re: 课题组会议时间更新"
+        assert client.get("/api/v1/mails/missing/reply-drafts").status_code == 404
