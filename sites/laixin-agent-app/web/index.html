@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#f6f7f2" />
+  <meta name="description" content="来信：大学生的邮件整理与回复草稿工作台。当前页面使用虚构样例数据进行演示。" />
+  <title>来信｜校园邮件工作台</title>
+  <style>
+    :root {
+      --site-bg: #f5f6f1;
+      --site-fg: #202722;
+      --site-accent: #64775d;
+      --site-on-accent: #fff;
+      --site-surface: #fff;
+      --site-muted: #778078;
+      --site-border: #e7e9e2;
+      --site-radius: 18px;
+      --site-space: 1;
+      --site-type: 1;
+      --site-motion: 1;
+      --shadow: 0 14px 40px rgba(36, 46, 37, .055);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--site-fg);
+      background: var(--site-bg);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: var(--site-bg); color: var(--site-fg); }
+    button, input, textarea { font: inherit; }
+    button { color: inherit; }
+    .app-shell { min-height: 100vh; }
+    .topbar { height: 74px; padding: 0 4.2vw; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--site-border); background: rgba(255,255,255,.8); }
+    .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; }
+    .brand-mark { width: 39px; height: 39px; border: 1.5px solid #364038; border-radius: 12px; display: grid; place-items: center; font-size: 20px; }
+    .brand-name { font-size: 20px; line-height: 1.1; font-weight: 750; letter-spacing: .04em; }
+    .brand-sub { margin-top: 3px; color: var(--site-muted); font-size: 9px; letter-spacing: .19em; }
+    .top-actions { display: flex; align-items: center; gap: 15px; }
+    .demo-status { display: inline-flex; align-items: center; gap: 7px; color: #667564; font-size: 12px; }
+    .demo-status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #85a076; }
+    .button { border: 1px solid var(--site-border); border-radius: 11px; padding: 11px 16px; background: white; cursor: pointer; transition: transform calc(180ms * var(--site-motion)), background calc(180ms * var(--site-motion)), border-color calc(180ms * var(--site-motion)); }
+    .button:hover { transform: translateY(-1px); border-color: #c7d0c2; }
+    .button:focus-visible, input:focus-visible, textarea:focus-visible, .mail-row:focus-visible { outline: 3px solid #b9c7ae; outline-offset: 2px; }
+    .button-primary { background: #222a24; color: white; border-color: #222a24; font-weight: 650; }
+    .button-primary:hover { background: #354238; }
+    .button-soft { background: #eef1e8; border-color: #e4e9db; color: #4c6246; }
+    .main { max-width: 1440px; margin: 0 auto; padding: 32px 4.2vw 64px; }
+    .intro { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+    .intro h1 { margin: 0; font-size: clamp(28px, 3vw, 40px); letter-spacing: -.035em; }
+    .intro p { margin: 8px 0 0; color: var(--site-muted); font-size: 14px; }
+    .intro-cta { flex: none; }
+    .sample-note { display: flex; align-items: center; gap: 10px; padding: 12px 15px; margin: 0 0 20px; border: 1px solid #e6e8df; border-radius: 12px; color: #687365; background: #f0f2eb; font-size: 12px; }
+    .sample-note b { color: #485743; }
+    .sample-note .note-icon { width: 21px; height: 21px; display: grid; place-items: center; border-radius: 50%; background: #dfe6d8; color: #53694c; font-weight: 800; flex: none; }
+    .workspace { display: grid; grid-template-columns: minmax(280px, 355px) minmax(0, 1fr); gap: 18px; align-items: start; }
+    .panel { background: var(--site-surface); border: 1px solid var(--site-border); border-radius: var(--site-radius); box-shadow: var(--shadow); }
+    .mailbox { padding: 20px 15px 15px; }
+    .mailbox-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 16px; }
+    .mailbox-head h2 { margin: 0; font-size: 16px; }
+    .mailbox-count { color: var(--site-muted); font-size: 12px; }
+    .filters { display: flex; gap: 6px; padding: 4px; background: #f5f6f2; border-radius: 11px; margin-bottom: 14px; overflow-x: auto; scrollbar-width: thin; }
+    .filter { border: 0; flex: 1 0 auto; padding: 9px 6px; border-radius: 8px; background: transparent; color: #727b72; font-size: 12px; cursor: pointer; white-space: nowrap; }
+    .filter[aria-pressed="true"] { color: #34402f; background: white; box-shadow: 0 2px 6px rgba(42,55,39,.08); font-weight: 700; }
+    .filter .filter-count { color: #83927a; margin-left: 3px; }
+    .mail-list { display: grid; gap: 7px; }
+    .mail-row { display: grid; grid-template-columns: 36px minmax(0,1fr) auto; gap: 10px; align-items: start; width: 100%; padding: 12px 10px; border: 1px solid transparent; border-radius: 13px; text-align: left; background: white; cursor: pointer; }
+    .mail-row:hover { background: #fafbf8; }
+    .mail-row[aria-current="true"] { background: #f1f3ea; border-color: #e7ebdf; }
+    .sender-avatar { width: 35px; height: 35px; display: grid; place-items: center; border-radius: 11px; background: #eef0e9; color: #65725f; font-size: 12px; font-weight: 700; }
+    .mail-row[data-priority="urgent"] .sender-avatar { background: #f7eae3; color: #a45c3e; }
+    .mail-row[data-priority="watch"] .sender-avatar { background: #f5f0df; color: #90733a; }
+    .mail-row-main { min-width: 0; }
+    .mail-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .mail-sender { color: #687269; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mail-time { color: #929a91; font-size: 10px; white-space: nowrap; }
+    .mail-subject { display: block; margin: 5px 0 4px; font-size: 13px; font-weight: 680; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mail-snippet { display: block; color: #838c83; font-size: 11px; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .priority-dot { width: 7px; height: 7px; margin-top: 4px; border-radius: 50%; background: #8b9f7f; }
+    .priority-dot.urgent { background: #c57b5e; }
+    .priority-dot.watch { background: #c0a365; }
+    .detail { min-height: 670px; overflow: hidden; }
+    .detail-head { padding: 27px 30px 22px; border-bottom: 1px solid #edf0e9; }
+    .detail-topline { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .priority-label { display: inline-flex; align-items: center; gap: 7px; color: #63775b; font-size: 12px; font-weight: 700; }
+    .priority-label .priority-dot { margin: 0; }
+    .mail-index { color: #9aa198; font-size: 11px; }
+    .detail h2 { margin: 15px 0 12px; font-size: clamp(20px, 2.2vw, 27px); line-height: 1.4; letter-spacing: -.025em; }
+    .sender-line { display: flex; gap: 10px; align-items: center; color: #7a837b; font-size: 12px; flex-wrap: wrap; }
+    .sender-line strong { color: #4a534c; font-weight: 650; }
+    .detail-actions { display: flex; gap: 9px; margin-top: 21px; }
+    .detail-actions .button { font-size: 12px; padding: 9px 13px; }
+    .detail-body { display: grid; grid-template-columns: minmax(0,1fr) 280px; gap: 20px; padding: 25px 30px 30px; }
+    .detail-main { min-width: 0; }
+    .section-title { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; font-size: 13px; }
+    .section-title .line { width: 3px; height: 15px; border-radius: 2px; background: #91a182; }
+    .summary-copy { margin: 0; color: #616c63; font-size: 14px; line-height: 1.85; }
+    .next-step { margin-top: 22px; padding: 15px 16px; border: 1px solid #e8ecdf; border-radius: 13px; background: #f7f8f3; }
+    .next-step h3 { margin: 0 0 7px; font-size: 12px; }
+    .next-step p { margin: 0; color: #5f6d5a; font-size: 13px; line-height: 1.7; }
+    .deadline { display: inline-flex; align-items: center; gap: 6px; margin-top: 11px; color: #986343; font-size: 11px; font-weight: 650; }
+    .original { margin-top: 23px; }
+    .original details { border: 1px solid var(--site-border); border-radius: 12px; overflow: hidden; }
+    .original summary { padding: 12px 14px; color: #687269; font-size: 12px; cursor: pointer; list-style: none; }
+    .original summary::-webkit-details-marker { display: none; }
+    .original summary::after { content: "＋"; float: right; color: #819078; }
+    .original details[open] summary::after { content: "−"; }
+    .original-copy { padding: 0 14px 15px; color: #6b756d; font-size: 12px; line-height: 1.8; white-space: pre-line; }
+    .source-card { padding: 16px; border: 1px solid #eceee8; border-radius: 14px; background: #fbfcfa; align-self: start; }
+    .source-card h3 { margin: 0 0 12px; font-size: 12px; }
+    .source-card p { margin: 0; color: #7d867e; font-size: 11px; line-height: 1.65; }
+    .source-chip { display: block; width: 100%; margin-top: 9px; padding: 10px; border: 1px solid #e7ebe3; border-radius: 10px; text-align: left; background: white; cursor: pointer; }
+    .source-chip:hover { border-color: #c8d3bf; }
+    .source-chip strong { display: block; font-size: 11px; line-height: 1.5; }
+    .source-chip span { display: block; margin-top: 4px; color: #89928a; font-size: 10px; }
+    .query-panel { margin-top: 18px; padding: 21px 24px; }
+    .query-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .query-heading h2 { margin: 0; font-size: 15px; }
+    .query-heading span { color: #88918a; font-size: 11px; }
+    .query-form { display: flex; gap: 10px; margin-top: 14px; }
+    .query-form input { flex: 1; min-width: 0; padding: 12px 14px; border: 1px solid #e2e7dc; border-radius: 11px; background: #fcfdfa; color: #344039; font-size: 13px; }
+    .query-result { display: none; margin-top: 16px; padding: 16px; border-radius: 12px; background: #f5f7f1; color: #59665c; font-size: 13px; line-height: 1.75; }
+    .query-result.visible { display: block; }
+    .query-result strong { color: #344137; }
+    .query-result .result-sources { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 11px; }
+    .result-source { padding: 6px 9px; border: 1px solid #e1e7d9; border-radius: 8px; background: white; color: #596b54; font-size: 11px; cursor: pointer; }
+    .result-source:hover { border-color: #bdcbb3; }
+    .composer { display: none; margin-top: 18px; padding: 22px 24px; }
+    .composer.visible { display: block; }
+    .composer-top { display: flex; justify-content: space-between; align-items: start; gap: 15px; }
+    .composer h2 { margin: 0; font-size: 16px; }
+    .composer .subtext { margin: 6px 0 0; color: #838c84; font-size: 11px; }
+    .close-composer { border: 0; background: transparent; color: #879087; font-size: 19px; cursor: pointer; }
+    .composer label { display: block; margin: 15px 0 7px; color: #59645b; font-size: 11px; font-weight: 650; }
+    .composer input, .composer textarea { width: 100%; padding: 11px 12px; border: 1px solid #e4e8df; border-radius: 10px; color: #38433a; background: #fdfefc; font-size: 12px; }
+    .composer textarea { min-height: 82px; resize: vertical; line-height: 1.7; }
+    .draft-output { display: none; }
+    .draft-output.visible { display: block; }
+    .draft-output textarea { min-height: 185px; white-space: pre-wrap; }
+    .composer-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 13px; }
+    .composer-actions .button { font-size: 12px; padding: 10px 13px; }
+    .draft-warning { display: flex; gap: 8px; margin-top: 13px; color: #906c48; font-size: 11px; line-height: 1.6; }
+    .toast { position: fixed; left: 50%; bottom: 25px; z-index: 10; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; padding: 11px 16px; border-radius: 10px; background: #263129; color: white; font-size: 12px; transition: opacity calc(180ms * var(--site-motion)), transform calc(180ms * var(--site-motion)); box-shadow: 0 8px 24px #1a211c33; }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+    .footer { padding: 24px 4.2vw 32px; border-top: 1px solid var(--site-border); color: #8b938b; text-align: center; font-size: 11px; }
+    .footer b { color: #6d7d65; font-weight: 650; }
+    @media (max-width: 1000px) {
+      .detail-body { grid-template-columns: minmax(0,1fr) 230px; }
+      .workspace { grid-template-columns: minmax(255px, 310px) minmax(0,1fr); }
+      .mailbox { padding-left: 10px; padding-right: 10px; }
+    }
+    @media (max-width: 760px) {
+      .topbar { height: 64px; padding: 0 18px; }
+      .brand-mark { width: 35px; height: 35px; }
+      .brand-name { font-size: 18px; }
+      .demo-status { font-size: 10px; }
+      .top-actions { gap: 8px; }
+      .top-actions .button { padding: 9px 11px; font-size: 12px; }
+      .main { padding: 24px 16px 42px; }
+      .intro { align-items: start; flex-direction: column; gap: 14px; margin-bottom: 17px; }
+      .intro h1 { font-size: 30px; }
+      .intro p { font-size: 13px; }
+      .sample-note { align-items: start; padding: 11px 12px; line-height: 1.6; }
+      .filters { gap: 2px; }
+      .filter { padding: 9px 5px; font-size: 11px; }
+      .workspace { grid-template-columns: 1fr; gap: 13px; }
+      .mailbox { padding: 15px 11px 11px; }
+      .mail-list { grid-template-columns: repeat(6, minmax(0,1fr)); grid-auto-flow: column; grid-auto-columns: minmax(250px, 78vw); overflow-x: auto; padding-bottom: 5px; scroll-snap-type: x mandatory; }
+      .mail-row { scroll-snap-align: start; }
+      .detail { min-height: auto; }
+      .detail-head { padding: 21px 19px 17px; }
+      .detail h2 { font-size: 21px; margin: 13px 0 10px; }
+      .detail-body { grid-template-columns: 1fr; padding: 19px; gap: 16px; }
+      .source-card { order: 2; }
+      .detail-actions { margin-top: 17px; }
+      .query-panel, .composer { padding: 18px; }
+      .query-heading { align-items: start; flex-direction: column; gap: 5px; }
+      .query-form { flex-direction: column; }
+      .query-form .button { width: 100%; }
+      .footer { padding: 20px 16px 28px; line-height: 1.7; }
+    }
+    @media (max-width: 390px) {
+      .demo-status { display: none; }
+      .detail-actions { flex-wrap: wrap; }
+      .mail-list { grid-auto-columns: 84vw; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="来信首页">
+        <span class="brand-mark" aria-hidden="true">✉</span>
+        <span><span class="brand-name">来信</span><span class="brand-sub">MAIL WORKSPACE</span></span>
+      </a>
+      <div class="top-actions">
+        <span class="demo-status">样例体验</span>
+        <button class="button button-primary" id="start-button">开始体验 <span aria-hidden="true">→</span></button>
+      </div>
+    </header>
+
+    <main class="main" id="top">
+      <section class="intro" aria-labelledby="page-title">
+        <div><h1 id="page-title">校园来信，一眼理清</h1><p>把散落在邮箱里的通知，变成清楚的下一步。</p></div>
+        <button class="button button-primary intro-cta" id="start-button-secondary">开始体验 <span aria-hidden="true">↓</span></button>
+      </section>
+      <div class="sample-note" role="note"><span class="note-icon" aria-hidden="true">i</span><span><b>演示数据说明</b> · 下方邮件均为虚构样例；查询与草稿由 Qoder Cloud Agent 实时生成。本页面不连接真实邮箱、不发送邮件，也不推送飞书。</span></div>
+
+      <section class="workspace" id="workspace" aria-label="校园邮件演示工作台">
+        <aside class="panel mailbox" aria-label="样例邮件列表">
+          <div class="mailbox-head"><h2>最近来信</h2><span class="mailbox-count" id="mail-count">6 封样例</span></div>
+          <div class="filters" role="group" aria-label="按处理优先级筛选">
+            <button class="filter" data-filter="all" aria-pressed="true">全部 <span class="filter-count">6</span></button>
+            <button class="filter" data-filter="urgent" aria-pressed="false">优先处理 <span class="filter-count">2</span></button>
+            <button class="filter" data-filter="watch" aria-pressed="false">需关注 <span class="filter-count">2</span></button>
+            <button class="filter" data-filter="info" aria-pressed="false">通知 <span class="filter-count">2</span></button>
+          </div>
+          <div class="mail-list" id="mail-list"></div>
+        </aside>
+
+        <article class="panel detail" id="detail" aria-live="polite"></article>
+      </section>
+
+      <section class="panel query-panel" aria-labelledby="query-title">
+        <div class="query-heading"><h2 id="query-title">用自然语言问问这些邮件</h2><span>答案会附上对应的样例邮件依据</span></div>
+        <form class="query-form" id="query-form">
+          <input id="query-input" aria-label="邮件问题" placeholder="例如：奖学金材料什么时候截止？" autocomplete="off" />
+          <button class="button button-primary" type="submit">查找答案 <span aria-hidden="true">↗</span></button>
+        </form>
+        <div class="query-result" id="query-result" aria-live="polite"></div>
+      </section>
+
+      <section class="panel composer" id="composer" aria-labelledby="composer-title">
+        <div class="composer-top"><div><h2 id="composer-title">起草邮件回复</h2><p class="subtext">先写下你想表达的要点，再编辑生成的草稿。</p></div><button class="close-composer" id="close-composer" aria-label="关闭回复草稿">×</button></div>
+        <label for="draft-subject">邮件主题</label><input id="draft-subject" />
+        <label for="reply-points">回复要点</label><textarea id="reply-points" placeholder="例如：确认参加，说明会提前准备本周进展材料。"></textarea>
+        <div class="composer-actions"><button class="button button-primary" id="generate-draft">生成草稿</button><button class="button button-soft" id="copy-draft" hidden>复制草稿</button></div>
+        <div class="draft-output" id="draft-output"><label for="draft-body">草稿正文（可以继续编辑）</label><textarea id="draft-body"></textarea><div class="draft-warning"><span aria-hidden="true">ⓘ</span><span><b>仅为草稿，不会发送邮件。</b>复制后可粘贴到你自己的邮箱中检查和发送。</span></div></div>
+      </section>
+    </main>
+    <footer class="footer">来信 · 面向大学生日常学习生活的邮件整理工具　 <b>虚构邮件样例 · AI 实时生成</b> · 不会读取或发送真实邮件</footer>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    const messages = [
+      { id: 'scholarship', sender: '学生事务中心', address: 'student@campus.example', avatar: '学', time: '今天 09:18', subject: '奖学金申请材料补交通知', priority: 'urgent', category: '优先处理', summary: '学生事务中心通知：奖学金申请还缺少在读证明和上学年成绩单，需要在截止时间前通过学生服务平台补交。', next: '登录学生服务平台，上传在读证明和上学年成绩单；完成后确认页面显示“提交成功”。', deadline: '截止：11 月 18 日（周三）18:00', original: '同学你好：\n\n你提交的奖学金申请还缺少以下材料：\n1. 本学年在读证明\n2. 上学年成绩单\n\n请于 11 月 18 日（周三）18:00 前登录学生服务平台，在“奖助学金 - 材料补交”中完成上传。逾期系统将关闭提交入口。\n\n学生事务中心', evidence: '邮件正文写明缺少两份材料，并给出明确补交时间。', senderName: '学生事务中心', related: [] },
+      { id: 'meeting-update', sender: '周老师 · 课题组', address: 'zhou@lab.campus.example', avatar: '周', time: '今天 08:42', subject: '本周组会时间和地点调整', priority: 'urgent', category: '优先处理', summary: '导师将本周组会调整为周四 16:00，在理科楼 B202 举行。请今天下班前回复确认，并准备本周研究进展。', next: '回复确认参会，并准备一页本周研究进展。若时间冲突，今天下班前告知导师。', deadline: '请于今天 17:30 前确认', original: '大家好：\n\n本周组会时间调整为周四 16:00，地点改在理科楼 B202。请大家今天 17:30 前回复确认是否参会，并准备一页本周研究进展。\n\n周老师', evidence: '邮件正文包含变更后的时间、地点和回复要求。', senderName: '周老师', related: ['meeting-original'] },
+      { id: 'lab-booking', sender: '实验教学中心', address: 'lab@campus.example', avatar: '实', time: '昨天 16:05', subject: '仪器预约：补充实验用途说明', priority: 'watch', category: '需要关注', summary: '你预约的光谱仪时段已暂存。请补充实验用途说明后，预约才会最终确认。', next: '打开实验仪器预约系统，为本次预约补充实验名称和样品数量。', deadline: '建议今天 17:00 前完成', original: '同学你好：\n\n你提交的光谱仪预约已暂存。由于实验用途说明为空，请补充实验名称与预计样品数量。资料完整后系统会自动确认时段。\n\n实验教学中心', evidence: '预约仍处于暂存状态，缺少用途说明。', senderName: '实验教学中心', related: [] },
+      { id: 'career-fair', sender: '就业指导中心', address: 'career@campus.example', avatar: '就', time: '昨天 14:26', subject: '秋季校园双选会报名开始', priority: 'watch', category: '需要关注', summary: '秋季校园双选会将于下周五举行，线上报名已经开放。报名时可选择最多三家意向单位。', next: '查看参会企业名单，感兴趣的话提前报名并准备简历。', deadline: '报名截止：11 月 20 日', original: '同学们好：\n\n秋季校园双选会将于 11 月 27 日（周五）在体育馆举办。线上报名现已开放，报名截止 11 月 20 日。每位同学最多选择三家意向单位。\n\n就业指导中心', evidence: '邮件列出活动日期、报名截止时间及可选单位数量。', senderName: '就业指导中心', related: [] },
+      { id: 'library', sender: '图书馆', address: 'library@campus.example', avatar: '图', time: '昨天 10:11', subject: '借阅图书到期提醒', priority: 'info', category: '信息通知', summary: '你借阅的《设计中的设计》将于 11 月 22 日到期。可以在线续借一次。', next: '如果还需要阅读，可在图书馆网站办理续借；否则在到期日前归还。', deadline: '到期：11 月 22 日', original: '读者您好：\n\n您借阅的《设计中的设计》预计于 11 月 22 日到期。如需继续借阅，可在“我的图书馆 - 当前借阅”中办理续借一次。\n\n图书馆', evidence: '邮件是借阅期限提醒，暂未要求立即操作。', senderName: '图书馆', related: [] },
+      { id: 'club-news', sender: '校园青年志愿者协会', address: 'volunteer@campus.example', avatar: '青', time: '周一 19:32', subject: '本周末校园公益市集招募', priority: 'info', category: '信息通知', summary: '志愿者协会发布周末公益市集招募信息，活动内容包括旧物交换和环保手作。', next: '有兴趣时查看活动详情，自愿报名。', deadline: '', original: '同学们好：\n\n本周六 13:00，校园草坪将举办公益市集，包含旧物交换、环保手作等活动。欢迎感兴趣的同学自愿报名参与。\n\n校园青年志愿者协会', evidence: '邮件为自愿参加的活动信息，没有强制操作要求。', senderName: '志愿者协会', related: [] },
+      { id: 'meeting-original', sender: '周老师 · 课题组', address: 'zhou@lab.campus.example', avatar: '周', time: '周一 12:10', subject: '本周课题组组会安排', priority: 'info', category: '关联邮件', summary: '组会原安排为周四 14:00，在理科楼 A301。后续邮件已更新安排，请以最新通知为准。', next: '已被“本周组会时间和地点调整”更新。', deadline: '', original: '大家好：\n\n本周组会安排在周四 14:00，地点为理科楼 A301。请提前准备近期研究进展。\n\n周老师', evidence: '这是被后续变更邮件引用的原始安排，仅作为来信时间线依据。', senderName: '周老师', related: [] }
+    ];
+    const priorities = { urgent: '优先处理', watch: '需要关注', info: '信息通知' };
+    let selectedId = 'scholarship';
+    let activeFilter = 'all';
+    const el = (id) => document.getElementById(id);
+    const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const getMail = (id) => messages.find((mail) => mail.id === id);
+    function renderList() {
+      const filtered = messages.filter((mail) => mail.id !== 'meeting-original' && (activeFilter === 'all' || mail.priority === activeFilter));
+      el('mail-list').innerHTML = filtered.map((mail) => `
+        <button class="mail-row" data-id="${mail.id}" data-priority="${mail.priority}" aria-current="${mail.id === selectedId}" type="button">
+          <span class="sender-avatar" aria-hidden="true">${escapeHtml(mail.avatar)}</span>
+          <span class="mail-row-main"><span class="mail-row-top"><span class="mail-sender">${escapeHtml(mail.sender)}</span><time class="mail-time">${escapeHtml(mail.time)}</time></span><span class="mail-subject">${escapeHtml(mail.subject)}</span><span class="mail-snippet">${escapeHtml(mail.summary)}</span></span>
+          <span class="priority-dot ${mail.priority}" aria-label="${priorities[mail.priority]}"></span>
+        </button>`).join('');
+      document.querySelectorAll('.mail-row').forEach((row) => row.addEventListener('click', () => selectMail(row.dataset.id)));
+    }
+    function renderDetail() {
+      const mail = getMail(selectedId);
+      if (!mail) return;
+      const related = mail.related.map(getMail).filter(Boolean);
+      const isRelated = mail.id === 'meeting-original';
+      el('detail').innerHTML = `
+        <header class="detail-head">
+          <div class="detail-topline"><span class="priority-label"><span class="priority-dot ${mail.priority}"></span>${isRelated ? '关联邮件依据' : priorities[mail.priority]}</span><span class="mail-index">样例邮件 · ${messages.indexOf(mail) + 1}</span></div>
+          <h2>${escapeHtml(mail.subject)}</h2>
+          <div class="sender-line"><strong>${escapeHtml(mail.sender)}</strong><span>&lt;${escapeHtml(mail.address)}&gt;</span><span>·</span><time>${escapeHtml(mail.time)}</time></div>
+          <div class="detail-actions"><button class="button button-soft" id="reply-button" type="button">✎ 起草回复</button><button class="button" id="copy-summary" type="button">复制摘要</button></div>
+        </header>
+        <div class="detail-body">
+          <div class="detail-main">
+            <h3 class="section-title"><span class="line"></span>邮件摘要</h3><p class="summary-copy">${escapeHtml(mail.summary)}</p>
+            <div class="next-step"><h3>建议的下一步</h3><p>${escapeHtml(mail.next)}</p>${mail.deadline ? `<span class="deadline">◷ ${escapeHtml(mail.deadline)}</span>` : ''}</div>
+            <div class="original"><h3 class="section-title"><span class="line"></span>邮件原文</h3><details><summary>展开查看虚构邮件原文</summary><div class="original-copy">${escapeHtml(mail.original)}</div></details></div>
+          </div>
+          <aside class="source-card"><h3>判断依据</h3><p>${escapeHtml(mail.evidence)}</p>${related.length ? `<div style="margin-top:14px"><p style="font-weight:650;color:#58645b">相关邮件</p>${related.map((item) => `<button class="source-chip" type="button" data-source="${item.id}"><strong>${escapeHtml(item.subject)}</strong><span>${escapeHtml(item.time)} · 原始安排</span></button>`).join('')}</div>` : `<div style="margin-top:14px"><p style="font-weight:650;color:#58645b">邮件来源</p><span class="source-chip" style="cursor:default"><strong>${escapeHtml(mail.senderName)}</strong><span>${escapeHtml(mail.address)}</span></span></div>`}</aside>
+        </div>`;
+      el('reply-button').addEventListener('click', openComposer);
+      el('copy-summary').addEventListener('click', () => copyText(`${mail.subject}\n${mail.summary}\n下一步：${mail.next}`));
+      document.querySelectorAll('[data-source]').forEach((button) => button.addEventListener('click', () => selectMail(button.dataset.source)));
+    }
+    function selectMail(id) {
+      selectedId = id;
+      renderList(); renderDetail();
+      if (window.matchMedia('(max-width: 760px)').matches) el('detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    function showToast(message) {
+      const toast = el('toast'); toast.textContent = message; toast.classList.add('show');
+      clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toast.classList.remove('show'), 2300);
+    }
+    async function copyText(text) {
+      try { await navigator.clipboard.writeText(text); showToast('已复制到剪贴板'); }
+      catch { const box = document.createElement('textarea'); box.value = text; box.style.position = 'fixed'; box.style.opacity = '0'; document.body.appendChild(box); box.select(); const ok = document.execCommand('copy'); box.remove(); showToast(ok ? '已复制到剪贴板' : '复制失败，请手动选择文本'); }
+    }
+    function openComposer() {
+      const mail = getMail(selectedId);
+      el('composer').classList.add('visible');
+      el('draft-subject').value = `Re: ${mail.subject}`;
+      el('reply-points').value = '';
+      el('draft-body').value = '';
+      el('draft-output').classList.remove('visible');
+      el('copy-draft').hidden = true;
+      el('composer').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      el('reply-points').focus({ preventScroll: true });
+    }
+    async function generateDraft() {
+      const mail = getMail(selectedId);
+      const points = el('reply-points').value.trim();
+      if (!points) { showToast('先写下你希望表达的回复要点'); el('reply-points').focus(); return; }
+      const button = el('generate-draft');
+      button.disabled = true; button.textContent = 'AI 正在起草…';
+      try {
+        const response = await fetch('/functions/v1/app/api/draft', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mail_id: mail.id, points }) });
+        const result = await response.json();
+        if (!response.ok || result?.error) throw new Error(result?.error?.message || '草稿生成失败，请稍后重试。');
+        el('draft-subject').value = result.subject;
+        el('draft-body').value = result.body;
+        el('draft-output').classList.add('visible');
+        el('copy-draft').hidden = false;
+        showToast('草稿已生成，可以继续编辑');
+      } catch (error) { showToast(error.message || '草稿生成失败，请稍后重试'); }
+      finally { button.disabled = false; button.textContent = '生成草稿'; }
+    }
+    async function answerQuery(question) {
+      const response = await fetch('/functions/v1/app/api/query', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question }) });
+      const result = await response.json();
+      if (!response.ok || result?.error) throw new Error(result?.error?.message || '查询失败，请稍后重试。');
+      return { answer: result.answer, sources: result.sources || [] };
+    }
+    document.querySelectorAll('.filter').forEach((button) => button.addEventListener('click', () => {
+      activeFilter = button.dataset.filter;
+      document.querySelectorAll('.filter').forEach((filter) => filter.setAttribute('aria-pressed', String(filter === button)));
+      const filteredIds = messages.filter((mail) => mail.id !== 'meeting-original' && (activeFilter === 'all' || mail.priority === activeFilter)).map((mail) => mail.id);
+      if (!filteredIds.includes(selectedId)) selectedId = filteredIds[0] || 'scholarship';
+      renderList(); renderDetail();
+    }));
+    el('query-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const question = el('query-input').value.trim();
+      if (!question) { el('query-input').focus(); return; }
+      const submit = el('query-form').querySelector('button[type="submit"]');
+      submit.disabled = true; submit.textContent = 'AI 正在查找…';
+      el('query-result').innerHTML = '<span class="query-pending">正在检索样例邮件并生成回答…</span>'; el('query-result').classList.add('visible');
+      try {
+        const result = await answerQuery(question);
+        el('query-result').innerHTML = `<strong>根据这组演示邮件：</strong>${escapeHtml(result.answer)}<div class="result-sources"><span style="font-size:11px;color:#7f897f;padding:6px 0">相关依据</span>${result.sources.map((mail) => `<button class="result-source" type="button" data-query-source="${escapeHtml(mail.id)}">${escapeHtml(mail.subject)} ↗</button>`).join('')}</div>`;
+        document.querySelectorAll('[data-query-source]').forEach((button) => button.addEventListener('click', () => { selectMail(button.dataset.querySource); el('detail').scrollIntoView({ behavior: 'smooth', block: 'start' }); }));
+      } catch (error) { el('query-result').textContent = error.message || '查询失败，请稍后重试。'; }
+      finally { submit.disabled = false; submit.innerHTML = '查找答案 <span aria-hidden="true">↗</span>'; }
+    });
+    el('generate-draft').addEventListener('click', generateDraft);
+    el('copy-draft').addEventListener('click', () => copyText(`主题：${el('draft-subject').value}\n\n${el('draft-body').value}`));
+    el('close-composer').addEventListener('click', () => el('composer').classList.remove('visible'));
+    const startExperience = () => { el('workspace').scrollIntoView({ behavior: 'smooth', block: 'start' }); selectMail(selectedId); };
+    el('start-button').addEventListener('click', startExperience);
+    el('start-button-secondary').addEventListener('click', startExperience);
+    renderList(); renderDetail();
+  </script>
+</body>
+</html>
