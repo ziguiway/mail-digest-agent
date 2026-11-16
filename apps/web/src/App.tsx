@@ -5,12 +5,15 @@ import {
   ArrowRight,
   ArrowSquareOut,
   ChatsCircle,
-  CheckCircle,
+  DeviceMobile,
   EnvelopeSimple,
   GearSix,
   House,
   List,
   ListChecks,
+  Monitor,
+  PlayCircle,
+  SignIn,
   SignOut,
   Sparkle,
   X,
@@ -31,6 +34,10 @@ const nav = [
   { to: '/connections', label: '连接与设置', icon: GearSix },
   { to: '/tasks', label: '任务记录', icon: List },
 ];
+const promoVideo = new URL('./assets/laixin-promo.mp4', import.meta.url).href;
+const promoPoster = new URL('./assets/laixin-promo-poster.jpg', import.meta.url).href;
+const promoCaptions = new URL('./assets/laixin-promo.vtt', import.meta.url).href;
+
 function Brand() {
   return (
     <Link to="/" className="brand">
@@ -50,7 +57,9 @@ function Login({ auth }: { auth: Auth }) {
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  async function submit(event?: FormEvent, demo = false) {
+  const demo = auth.mode === 'demo';
+
+  async function submit(event?: FormEvent) {
     event?.preventDefault();
     setBusy(true);
     setError('');
@@ -68,83 +77,51 @@ function Login({ auth }: { auth: Auth }) {
   }
   return (
     <div className="login-page">
-      <header>
+      <a className="login-skip" href="#login-main">
+        跳到主要内容
+      </a>
+      <header className="login-header">
         <Brand />
-        <span className="muted">你的来信，有条不紊。</span>
+        <a className="login-preview-link" href="#login-preview">
+          <PlayCircle size={19} aria-hidden="true" />
+          产品介绍
+        </a>
       </header>
-      <main>
+      <main className="login-layout" id="login-main" tabIndex={-1}>
         <section className="login-copy">
-          <p className="eyebrow">A LITTLE LESS INBOX. A LITTLE MORE CLARITY.</p>
           <h1>
-            把多个邮箱，
+            来信纷至，
             <br />
-            读成一份清楚的安排。
+            <span>要事有序。</span>
           </h1>
-          <p>
-            汇总来信里的事项与截止时间，
-            <br />
-            随时提问，让每个答案都有邮件依据。
-          </p>
-          <div className="login-features">
-            <span>
-              <CheckCircle />
-              多个邮箱，一个工作台
-            </span>
-            <span>
-              <CheckCircle />
-              每日摘要，优先处理
-            </span>
-            <span>
-              <CheckCircle />
-              继续追问，核对来源
-            </span>
-          </div>
-          <div className="mail-art" aria-hidden="true">
-            <div className="art-line" />
-            <div className="art-envelope">
-              <EnvelopeSimple size={76} weight="light" />
-            </div>
-            <div className="art-note">
-              <span>今日来信</span>
-              <i />
-              <i />
-              <small>事项已整理</small>
-              <CheckCircle size={20} />
-            </div>
-          </div>
+          <p>从多个邮箱提炼优先事项与截止时间。打开一份摘要，就知道先处理什么。</p>
         </section>
-        <section className="login-form panel">
-          <p className="eyebrow">WELCOME TO YOUR WORKSPACE</p>
-          <h2>
-            {auth.mode === 'demo'
-              ? '先看看，来信如何工作。'
+        <section className="login-form" aria-labelledby="login-form-title">
+          <div className="login-form-heading">
+            <span>
+              {demo ? (
+                <Sparkle size={20} aria-hidden="true" />
+              ) : (
+                <SignIn size={20} aria-hidden="true" />
+              )}
+            </span>
+            <h2 id="login-form-title">
+              {demo ? '体验演示工作台' : auth.initialized ? '登录工作台' : '建立你的工作台'}
+            </h2>
+          </div>
+          <p className="login-form-intro">
+            {demo
+              ? '用六封样例邮件体验摘要和连续查询。模型回答由规则模拟。'
               : auth.initialized
-                ? '欢迎回来。'
-                : '建立你的工作台。'}
-          </h2>
-          <p className="muted">
-            {auth.mode === 'demo'
-              ? '使用六封样例邮件，体验摘要和连续查询。模型回答由规则模拟。'
-              : auth.initialized
-                ? '输入管理密码，继续查看你的来信。'
+                ? '输入管理密码，查看你的来信。'
                 : '设置管理密码，然后按向导连接模型与邮箱。'}
           </p>
           <ErrorNotice>{error}</ErrorNotice>
-          {auth.mode === 'demo' ? (
-            <>
-              <div className="demo-disclosure">
-                <Sparkle size={22} />
-                <p>演示使用独立样例数据，不连接真实邮箱、模型或飞书。</p>
-              </div>
-              <Button
-                className="full-width"
-                onClick={() => submit(undefined, true)}
-                disabled={busy}
-              >
-                {busy ? '正在准备工作台' : '进入演示工作台'}
-                <ArrowRight />
-              </Button>
-            </>
+          {demo ? (
+            <Button className="full-width" onClick={() => submit()} disabled={busy}>
+              {busy ? '正在准备工作台' : '进入演示工作台'}
+              <ArrowRight aria-hidden="true" />
+            </Button>
           ) : (
             <form className="form-stack" onSubmit={submit}>
               {!auth.initialized && (
@@ -176,16 +153,61 @@ function Login({ auth }: { auth: Auth }) {
               </Field>
               <Button type="submit" className="full-width" disabled={busy}>
                 {busy ? '正在打开' : auth.initialized ? '进入工作台' : '初始化并开始配置'}
-                <ArrowRight />
+                <ArrowRight aria-hidden="true" />
               </Button>
             </form>
           )}
-          <p className="login-footnote">单用户自托管 · 数据保存在你的服务中</p>
+        </section>
+        <section
+          className="login-preview"
+          id="login-preview"
+          aria-labelledby="login-promo-title"
+          tabIndex={-1}
+        >
+          <figure className="login-promo">
+            <video
+              aria-labelledby="login-promo-title"
+              controls
+              playsInline
+              preload="none"
+              poster={promoPoster}
+              width={1920}
+              height={1080}
+            >
+              <source src={promoVideo} type="video/mp4" />
+              <track kind="captions" label="简体中文" srcLang="zh-CN" src={promoCaptions} />
+              <a href={promoVideo}>打开产品介绍视频</a>
+            </video>
+            <figcaption>
+              <h2 id="login-promo-title">来信产品介绍</h2>
+              <time dateTime="PT32S" aria-label="32 秒">
+                0:32
+              </time>
+            </figcaption>
+          </figure>
+          <ul className="login-features">
+            <li>
+              <Monitor size={22} aria-hidden="true" />
+              <div>
+                <h3>网页工作台</h3>
+                <p>集中查看多个邮箱，核对邮件原文。</p>
+              </div>
+            </li>
+            <li>
+              <DeviceMobile size={22} aria-hidden="true" />
+              <div>
+                <h3>手机飞书</h3>
+                <p>绑定后接收每日摘要，随时追问邮件。</p>
+              </div>
+            </li>
+          </ul>
         </section>
       </main>
-      <footer>
+      <footer className="login-footer">
         <span>来信 · 多邮箱智能助手</span>
-        <span>把注意力，留给真正重要的事。</span>
+        <span>
+          {demo ? '演示数据与真实邮箱、模型及飞书隔离。' : '单用户自托管 · 数据保存在你的服务中'}
+        </span>
       </footer>
     </div>
   );
